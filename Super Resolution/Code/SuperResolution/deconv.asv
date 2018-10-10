@@ -1,0 +1,23 @@
+clc; clear all; close all;
+
+
+load('deconv_images/blurred_images')
+shape_images = size(blurred_images);
+num_images = shape_images(1);
+
+
+deconvolved = zeros(shape_images);
+myscale = [5, 5];
+
+for i = 16:16%num_images
+    i
+    %[J_xy P] = deconvblind(squeeze(blurred_images(i,:,:)), ones(myscale),30);
+    
+    deconvolved(i , : , :) = J_xy;
+end
+
+figure
+subplot(121)
+imshow(squeeze(blurred_images(16, 100:400, 100:400)))
+subplot(122)
+imshow(squeeze(deconvolved(16, 100:400, 100:400)))
