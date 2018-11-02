@@ -1,14 +1,15 @@
 clc; clear all; close all;
 
-addpath('D:\Projects\Matlab Tools\Tiff handling');
+addpath('D:\Projects\Github\Matlab Tools\Tiff handling');
 %[fname, fpath] =  uigetfile;
-load_loc = 'D:\Projects\Channel Unmixing\Images\Colorful 800-1050  CFP-YFP cube-crop-high qual-2.tif'; %strcat(fpath, fname); %
+load_loc = 'D:\Projects\Local\Channel Unmixing\Images\BPAE cells nonsequential area2.tif'
+%'D:\Projects\Channel Unmixing\Images\Colorful 800-1050  CFP-YFP cube-crop-high qual-2.tif'; %strcat(fpath, fname); %
 %data = bfopen(load_loc);
 
 
-num_labels=6;
-num_channels = 5;%input('How many image channels are there? \n'); %3;%
-all_channel_im = read_tiff(num_channels, load_loc, 14, 14);
+num_labels=3;
+num_channels = 3;%input('How many image channels are there? \n'); %3;%
+all_channel_im = read_tiff(num_channels, load_loc, 7, 7)*16;
 
 
 % for i = 1:4
@@ -29,7 +30,7 @@ max_iter = 150;
 opt = statset('MaxIter', max_iter);
 n_pixels = prod(image_size);
 
-for slice = 9:9%1:num_images
+for slice = 1:num_images
     
     Y  = zeros(num_channels+autofluorescence, n_pixels);
     for ch = 1:num_channels
@@ -73,7 +74,7 @@ for slice = 9:9%1:num_images
 end
 
 %[fname, fpath] =  uiputfile;
-save_loc = 'C:\Users\tmcrae\Desktop\Projects\Channel Unmixing\Results\4_channel_test.tif'; %strcat(fpath, fname);
+save_loc = 'D:\Projects\Local\Channel Unmixing\Results\nnmf_example.tif'; 
 write_tiff(unmixed, save_loc)
 
 

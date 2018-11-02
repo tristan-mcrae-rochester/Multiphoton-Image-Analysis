@@ -22,7 +22,7 @@ for i = 1:num_fluorophores
         signature = zeros(num_channels, 1);
         signature(i) = 1;
     else
-        fname = strcat('D:\Projects\Channel Unmixing\Code\Cornell\', fluorophore, '.csv');
+        fname = strcat('D:\Projects\Github\Spectral Unmixing\Code\Cornell\', fluorophore, '.csv');
         emission_spectra = csvread(fname, 1, 0);
         signature = zeros(num_channels, 1);
         for ch = 1:num_channels
