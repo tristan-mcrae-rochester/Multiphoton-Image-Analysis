@@ -36,9 +36,10 @@ function XTSpectralUnmixing(aImarisApplicationID)
 
 %~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 %Load data
-%~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-disp('Loading data into MATLAB')
+%~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ID
+disp('Loading data into MATLAB (for large datasets, this may take some time)')
 
+disp('Setting up connection')
 % Set up connection	between	Imaris and MATLAB
 if	isa(aImarisApplicationID, 'Imaris.IApplicationPrxHelper')
     vImarisApplication = aImarisApplicationID;
@@ -52,7 +53,7 @@ else
     vImarisApplication = vImarisLib.GetApplication(aImarisApplicationID);
 end
 
-
+disp('Finding the dataset properties')
 % Get the vDataSet object
 vDataSet = vImarisApplication.GetDataSet();
 % Get the data type
@@ -63,6 +64,7 @@ switch char(vDataSet.GetType())
     otherwise, error('Bad value for vDataSet.GetType()');
 end
 % Allocate memory
+disp('Allocating Memory')
 x_dim = vDataSet.GetSizeX();
 y_dim = vDataSet.GetSizeY();
 z_dim = vDataSet.GetSizeZ();
@@ -73,6 +75,7 @@ stack = zeros([x_dim, y_dim, z_dim, num_channels, num_timesteps], datatype);
 basic_stack = zeros([x_dim, y_dim, z_dim], datatype);
 % Get the pixel data
 for t = 1:num_timesteps
+    disp(strcat("Reading timestep ", int2str(t), " of ", int2str(num_timesteps)))
     for c = 1:num_channels
         switch char(vDataSet.GetType())
             case 'eTypeUInt8'
@@ -232,11 +235,16 @@ function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluor
     %It doesn't like doing kmeans on unsigned integers (understandibly)
     pixel_array = double(pixel_array);
       
-        
+    close all;    
     disp('Running K-Means')
     [cluster_indices, cluster_centroids, sumd, D] = kmeans(pixel_array, num_fluorophores_to_unmix, 'Replicates', replicates, 'MaxIter', maximum_iterations, 'Display', 'iter');%, 'Start', initial_centroids);
+    disp('Finished Running k-means')
+    pause(0.01) %let the display catch up
+    
+    
+    cluster_centroids
 
-    cluster_centroids;
+    
 
     cluster_totals = zeros(num_fluorophores_to_unmix, 1);
 
@@ -245,39 +253,96 @@ function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluor
     end
     cluster_totals;
 
-    if multi_fluorophore_pixels
-        inverse_square_weights = 1./D.^2;
-        inverse_square_weights_pixel_sums = sum(inverse_square_weights, 2);
-        cluster_weights = inverse_square_weights./inverse_square_weights_pixel_sums;
-    else
-        [D_pixel_mins, pixel_channels] = min(D, [], 2);
-        cluster_weights = transpose(ind2vec(transpose(pixel_channels)));
-    end
-
+    
     num_output_channels = num_fluorophores_to_unmix+length(channels_to_leave);
+    cluster_weights_image = zeros(x_dim, y_dim, z_dim, num_fluorophores_to_unmix, num_timesteps);
+    cluster_weights_timestep = zeros(x_dim, y_dim, z_dim, num_fluorophores_to_unmix);
+    distances = zeros(x_dim, y_dim, z_dim, num_fluorophores_to_unmix);
+    cluster_center_broadcast = zeros(x_dim, y_dim, z_dim, length(channels_to_unmix), num_fluorophores_to_unmix);
+    
+    disp('Broadcasting cluster centers')
+    for cluster = 1:num_fluorophores_to_unmix
+        cluster_center = cluster_centroids(cluster, :);
+        for x = 1:x_dim
+            for y = 1:y_dim
+                for z = 1:z_dim
+                    cluster_center_broadcast(x, y, z, :, cluster) = cluster_center;    
+                end
+            end
+        end
+    end
+    
+    for t = 1:num_timesteps
+        disp(strcat("applying clustering to timestep ", int2str(t), " of ", int2str(num_timesteps)))
+        if multi_fluorophore_pixels
+            if num_timesteps == 1
+                inverse_square_weights = 1./D.^2;
+                inverse_square_weights_pixel_sums = sum(inverse_square_weights, 2);
+                cluster_weights = inverse_square_weights./inverse_square_weights_pixel_sums;
+                cluster_weights_image(:) = cluster_weights(:);
+            else
+                for cluster = 1:num_fluorophores_to_unmix   
+                    %cluster_center = cluster_centroids(cluster, :);
+                    pixel_values = double(mixed_image(:, :, :, channels_to_unmix, t));
+                    %size(pixel_values)
+                    %size(cluster_center)
+                    %for x = 1:x_dim
+                    %    for y = 1:y_dim
+                    %        for z = 1:z_dim
+                    %            cluster_center_broadcast(x, y, z, :) = cluster_center;    
+                    %        end
+                    %    end
+                    %end
+                    %size(cluster_center_broadcast)
+                    diff = pixel_values - cluster_center_broadcast(:, :, :, :, cluster);
+                    %size(diff)
+                    intermediate_step = vecnorm(diff, 2, 4); 
+                    %size(intermediate_step)
+                    distances(:, :, :, cluster) = squeeze(intermediate_step);
+                end
+                %disp('Found timestep distances')
+                pause(0.01)
+                %disp('calculating weights')
+                inverse_square_weights = 1./distances.^2;
+                inverse_square_weights_pixel_sums = sum(inverse_square_weights, 4);
+                cluster_weights = inverse_square_weights./inverse_square_weights_pixel_sums;
+                %size(cluster_weights_timestep)
+                %size(cluster_weights)
+                cluster_weights_timestep(:) = cluster_weights(:);
+                cluster_weights_image(:, :, :, :, t) = cluster_weights_timestep;
+            end
+        else
+            if num_timesteps == 1
+                [D_pixel_mins, pixel_channels] = min(D, [], 2);
+                cluster_weights = transpose(ind2vec(transpose(pixel_channels)));
+                cluster_weights_image(:) = cluster_weights(:);
+            else
+                disp('Functionality for multiple timesteps with one fluorophore per pixel is not available')
+            end
+        end
+    end
+ 
+    %num_timesteps = 1 %remove when clustering from one step is applied successfully to all other steps
 
     
-    num_timesteps = 1 %remove when clustering from one step is applied successfully to all other steps
-
-    cluster_weights_image = zeros(x_dim, y_dim, z_dim, num_fluorophores_to_unmix, num_timesteps);
 
 
-    cluster_weights_image(:) = cluster_weights(:);
+    
 
 
     %cluster_weights for each pixel sum to the total intensity of the channels
     %being unmixed after this step
     if use_input_intensities
-       cluster_weights_image = cluster_weights_image .*mean(mixed_image(:, :, :, channels_to_unmix), 4); 
+        cluster_weights_image = cluster_weights_image .*mean(mixed_image(:, :, :, channels_to_unmix, :), 4); 
     else
-        cluster_weights_image = cluster_weights_image * max(mixed_image(:));
+        cluster_weights_image = cluster_weights_image * double(max(mixed_image(:)));
     end
 
     unmixed_image = zeros(x_dim, y_dim, z_dim, num_output_channels, num_timesteps);
 
     if length(channels_to_leave)>0
-        disp('Change this when running for multiple timesteps')
-        unmixed_image(:, :, :, 1:length(channels_to_leave), 1) = mixed_image(:, :, :, channels_to_leave, representitive_timestep);
+        %disp('Change this when running for multiple timesteps')
+        unmixed_image(:, :, :, 1:length(channels_to_leave), :) = mixed_image(:, :, :, channels_to_leave, :);
     end
     unmixed_image(:, :, :, length(channels_to_leave)+1:end, :) = cluster_weights_image;
 
@@ -348,10 +413,11 @@ function return_results_to_imaris(unmixed_image, vDataSet, num_timesteps, vImari
 dims = size(unmixed_image);
 num_output_channels = dims(4);
 vDataSet.SetSizeC(num_output_channels);            
-num_timesteps = 1 %For debugging only
+%num_timesteps = 1 %For debugging only
 
 for t = 1:num_timesteps
-    disp(t)
+    disp(strcat("returning timestep ", int2str(t), " of ", int2str(num_timesteps)))
+    pause(0.01)
     for c = 1:num_output_channels
         basic_stack = unmixed_image(:, :, :, c, t);
         switch char(vDataSet.GetType())
