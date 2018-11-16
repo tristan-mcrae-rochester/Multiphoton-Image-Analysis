@@ -76,6 +76,7 @@ basic_stack = zeros([x_dim, y_dim, z_dim], datatype);
 % Get the pixel data
 for t = 1:num_timesteps
     disp(strcat("Reading timestep ", int2str(t), " of ", int2str(num_timesteps)))
+    pause(0.01) %let the display catch up
     for c = 1:num_channels
         switch char(vDataSet.GetType())
             case 'eTypeUInt8'
@@ -97,6 +98,7 @@ for t = 1:num_timesteps
 end
 
 %~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 unmixed_image  = spectral_unmixing_gui(num_channels, num_timesteps, stack);
 disp('returning image')
 return_results_to_imaris(unmixed_image, vDataSet, num_timesteps, vImarisApplication);
@@ -165,7 +167,11 @@ function unmixed_image = k_means_gui(num_channels, num_timesteps, mixed_image)
 
     function p_call(varargin)
         vals = get(h.c,'Value');
-        channels_to_unmix = find([vals{:}]);
+        if length(vals)>1
+            channels_to_unmix = find([vals{:}]);
+        else
+            channels_to_unmix = find([vals]);
+        end
         num_fluorophores_to_unmix = str2num(get(h.s, 'String'));
 
         unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluorophores_to_unmix, channels_to_unmix, mixed_image);
@@ -189,10 +195,10 @@ function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluor
     x_dim = dims(1);
     y_dim = dims(2);
     z_dim = dims(3);
-    scaled_signatures = false;
+    scaled_signatures = true
     use_input_intensities = true; %Setting this to false is good for debugging where certain clusters are
-    replicates = 1;
-    multi_fluorophore_pixels = true;
+    replicates = 5
+    multi_fluorophore_pixels = true
     background_threshold = 0.00;
     maximum_iterations = 100;
     channels = 1:num_channels;
@@ -203,6 +209,15 @@ function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluor
     disp(num_timesteps)
     disp(size(mixed_image))
     
+    %It doesn't like doing kmeans on unsigned integers (understandibly)
+    mixed_image = double(mixed_image);
+    unscaled_mixed_image = mixed_image;
+    
+    %Scale pixels for clustering only
+    if scaled_signatures
+        disp("Scaling pixel intensities")
+        mixed_image(:, :, :, channels_to_unmix, :) = mixed_image(:, :, :, channels_to_unmix, :)./max(mixed_image(:, :, :, channels_to_unmix, :), [], 4); %change to just be for channels we're unmixing
+    end
     
     representitive_timestep = int32(num_timesteps/2)
     if num_timesteps>1
@@ -217,26 +232,17 @@ function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluor
     pixel_array = reordered_mixed_image(:, :);%image_to_pixel_array(mixed_image);
     pixel_array = permute(pixel_array, [2 1]);
 
-
+    %Filter out background pixels
     pixel_sums = mean(pixel_array, 2);
     foreground_pixels = pixel_sums > background_threshold;
     pixel_array(~foreground_pixels)=0;
 
     pixel_array = pixel_array(:, channels_to_unmix); 
 
-
-    %am I scaling pixels correctly?
-    if scaled_signatures
-        if max(pixel_array, [], 2) > 0
-            pixel_array = pixel_array./max(pixel_array, [], 2);
-        end
-    end
-
-    %It doesn't like doing kmeans on unsigned integers (understandibly)
-    pixel_array = double(pixel_array);
+    
       
     close all;    
-    disp('Running K-Means')
+    disp('Running K-Means. The display may freeze but it is still working behind the scenes. This may take a few minutes for large datasets.')
     [cluster_indices, cluster_centroids, sumd, D] = kmeans(pixel_array, num_fluorophores_to_unmix, 'Replicates', replicates, 'MaxIter', maximum_iterations, 'Display', 'iter');%, 'Start', initial_centroids);
     disp('Finished Running k-means')
     pause(0.01) %let the display catch up
@@ -245,7 +251,6 @@ function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluor
     cluster_centroids
 
     
-
     cluster_totals = zeros(num_fluorophores_to_unmix, 1);
 
     for i = 1:num_fluorophores_to_unmix
@@ -282,32 +287,15 @@ function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluor
                 cluster_weights_image(:) = cluster_weights(:);
             else
                 for cluster = 1:num_fluorophores_to_unmix   
-                    %cluster_center = cluster_centroids(cluster, :);
                     pixel_values = double(mixed_image(:, :, :, channels_to_unmix, t));
-                    %size(pixel_values)
-                    %size(cluster_center)
-                    %for x = 1:x_dim
-                    %    for y = 1:y_dim
-                    %        for z = 1:z_dim
-                    %            cluster_center_broadcast(x, y, z, :) = cluster_center;    
-                    %        end
-                    %    end
-                    %end
-                    %size(cluster_center_broadcast)
                     diff = pixel_values - cluster_center_broadcast(:, :, :, :, cluster);
-                    %size(diff)
                     intermediate_step = vecnorm(diff, 2, 4); 
-                    %size(intermediate_step)
                     distances(:, :, :, cluster) = squeeze(intermediate_step);
                 end
-                %disp('Found timestep distances')
                 pause(0.01)
-                %disp('calculating weights')
                 inverse_square_weights = 1./distances.^2;
                 inverse_square_weights_pixel_sums = sum(inverse_square_weights, 4);
                 cluster_weights = inverse_square_weights./inverse_square_weights_pixel_sums;
-                %size(cluster_weights_timestep)
-                %size(cluster_weights)
                 cluster_weights_timestep(:) = cluster_weights(:);
                 cluster_weights_image(:, :, :, :, t) = cluster_weights_timestep;
             end
@@ -322,20 +310,13 @@ function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluor
         end
     end
  
-    %num_timesteps = 1 %remove when clustering from one step is applied successfully to all other steps
-
-    
-
-
-    
-
 
     %cluster_weights for each pixel sum to the total intensity of the channels
     %being unmixed after this step
     if use_input_intensities
-        cluster_weights_image = cluster_weights_image .*mean(mixed_image(:, :, :, channels_to_unmix, :), 4); 
+        cluster_weights_image = cluster_weights_image .*mean(unscaled_mixed_image(:, :, :, channels_to_unmix, :), 4); 
     else
-        cluster_weights_image = cluster_weights_image * double(max(mixed_image(:)));
+        cluster_weights_image = cluster_weights_image * double(max(unscaled_mixed_image(:)));
     end
 
     unmixed_image = zeros(x_dim, y_dim, z_dim, num_output_channels, num_timesteps);
