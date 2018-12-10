@@ -19,7 +19,7 @@ from keras.layers import Input, Dense, Reshape, Flatten, Dropout, Concatenate, a
 from keras.layers import BatchNormalization, Activation, ZeroPadding2D
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D
-from keras.losses import mean_squared_error, mean_absolute_error
+from keras.losses import mean_squared_error, mean_absolute_error, binary_crossentropy
 from keras.models import Sequential, Model, load_model
 from keras.optimizers import Adam
 from perceptual_loss.vgg_16_keras import VGG_16
@@ -69,30 +69,24 @@ def perceptual_loss(y_true_256, y_pred_256):
 
 
 class Pix2Pix():
-    def __init__(self, load_weights = False, timestamp_and_epoch_to_load = None, interpolated = False):
+    def __init__(self, load_weights = False, timestamp_and_epoch_to_load = None):
         # Input shape
-        self.interpolated = interpolated
+        #self.network_filepath = 'weights/2018_10_29_20_37_55/epoch_96.hdf5'
         self.img_rows = 256
         self.img_cols = 256
-        if not self.interpolated:
-            self.img_rows = 64
-            self.img_cols = 64
         self.model_channels = 3
         self.img_shape = (self.img_rows, self.img_cols, self.model_channels)
         self.load_weights = load_weights
-        self.num_gpus = 1
-        
 
         # Configure data loader
-        self.dataset_name = 'microscopy_med_res_nuclei_uninterpolated'
-        #self.dataset_name = 'microscopy_med_res_nuclei_interpolated'
+        self.dataset_name = 'microscopy_fibers'
         self.data_loader = DataLoader(dataset_name=self.dataset_name,
                                       img_res=(self.img_rows, self.img_cols))
 
 
         # Calculate output shape of D (PatchGAN)
         patch = int(self.img_rows / 2**4)
-        self.disc_patch = (16, 16, 1)
+        self.disc_patch = (patch, patch, 1)
 
         # Number of filters in the first layer of G and D
         self.gf = 64
@@ -104,14 +98,9 @@ class Pix2Pix():
         if self.load_weights:
             network_filepath_discriminator = 'weights/discriminator/'+timestamp_and_epoch_to_load+'.hdf5'
             self.discriminator = load_model(network_filepath_discriminator)
-            if self.num_gpus>1:
-                self.discriminator_gpu = multi_gpu_model(self.discriminator, gpus = self.num_gpus)
         else:
             self.discriminator = self.build_discriminator()
-            if self.num_gpus>1:
-                self.discriminator_gpu = multi_gpu_model(self.discriminator, gpus = self.num_gpus)
-            self.discriminator.compile(loss='mse', optimizer=optimizer, metrics=['accuracy'])
-        #print(self.discriminator.summary())
+            self.discriminator.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
 
         #-------------------------
         # Construct Computational
@@ -124,35 +113,26 @@ class Pix2Pix():
             self.generator = load_model(network_filepath_generator, custom_objects={'perceptual_loss': perceptual_loss})
         else:
             self.generator = self.build_generator()
-        if self.num_gpus>1:
-            self.generator_gpu = multi_gpu_model(self.generator, gpus = self.num_gpus)
-        #Sprint(self.generator.summary())
+
         # Input images and their conditioning images
-        img_A = Input(shape=(256, 256, 3))
+        #img_A = Input(shape=self.img_shape)
         img_B = Input(shape=self.img_shape)
 
         # By conditioning on B generate a fake version of A
-        if self.num_gpus>1:
-            fake_A = self.generator_gpu(img_B)
-            # For the combined model we will only train the generator
-            self.discriminator_gpu.trainable = False
-            # Discriminators determines validity of translated images / condition pairs
-            valid = self.discriminator_gpu([fake_A, img_B])
-            self.combined = Model(inputs=[img_A, img_B], outputs=[valid, fake_A])
-            self.combined_gpu = multi_gpu_model(self.combined, gpus = self.num_gpus)
-            self.combined_gpu.compile(loss=['mse', perceptual_loss],
+        fake_A = self.generator(img_B)
+
+        # For the combined model we will only train the generator
+        self.discriminator.trainable = False
+
+        # Discriminators determines validity of translated images / condition pairs
+        valid = self.discriminator(fake_A)
+
+
+        #load weights
+        self.combined = Model(inputs=img_B, outputs=[valid, fake_A], name = 'combined model')
+        self.combined.compile(loss=['binary_crossentropy', perceptual_loss],
                               loss_weights=[1, 1],
-                             optimizer=optimizer) 
-        else:
-            fake_A = self.generator(img_B)
-            # For the combined model we will only train the generator
-            self.discriminator.trainable = False
-            # Discriminators determines validity of translated images / condition pairs
-            valid = self.discriminator([fake_A, img_B])
-            self.combined = Model(inputs=[img_A, img_B], outputs=[valid, fake_A])
-            self.combined.compile(loss=['mse', perceptual_loss],
-                              loss_weights=[1, 1],
-                             optimizer=optimizer) 
+                              optimizer=optimizer) # loss_weights=[1, 100] 
 
 
 
@@ -169,7 +149,7 @@ class Pix2Pix():
 
             return d
 
-        def deconv2d(layer_input, skip_input, filters, f_size=4, dropout_rate=0.5):
+        def deconv2d(layer_input, skip_input, filters, f_size=4, dropout_rate=0):
             """Layers used during upsampling"""
             u = UpSampling2D(size=2)(layer_input)
             u = Conv2D(filters, kernel_size=f_size, strides=1, padding='same', activation='relu')(u)
@@ -179,63 +159,31 @@ class Pix2Pix():
             u = Concatenate()([u, skip_input])
             return u
 
-        def neural_upsampling(layer_input, filters, f_size=4, dropout_rate=0.5, name = None):
-            """Layers used during upsampling"""
-            u = UpSampling2D(size=2)(layer_input)
-            u = Conv2D(filters, kernel_size=f_size, strides=1, padding='same', activation='relu', name = name)(u)
-            if dropout_rate:
-                u = Dropout(dropout_rate)(u)
-            u = BatchNormalization(momentum=0.8)(u)
-            return u
-
         # Image input
         d0 = Input(shape=self.img_shape)
 
-        if self.interpolated:
-            # Downsampling
-            d1 = conv2d(d0, self.gf, bn=False, dropout_rate=0.0)
-            d2 = conv2d(d1, self.gf*2)
-            d3 = conv2d(d2, self.gf*4)
-            d4 = conv2d(d3, self.gf*8)
-            d5 = conv2d(d4, self.gf*8)
-            d6 = conv2d(d5, self.gf*8)
-            d7 = conv2d(d6, self.gf*8)
+        # Downsampling
+        d1 = conv2d(d0, self.gf, bn=False)
+        d2 = conv2d(d1, self.gf*2, dropout_rate=0.5)
+        d3 = conv2d(d2, self.gf*4, dropout_rate=0.5)
+        d4 = conv2d(d3, self.gf*8, dropout_rate=0.5)
+        d5 = conv2d(d4, self.gf*8, dropout_rate=0.5)
+        d6 = conv2d(d5, self.gf*8, dropout_rate=0.5)
+        d7 = conv2d(d6, self.gf*8, dropout_rate=0.5)
 
-            # Upsampling
-            u1 = deconv2d(d7, d6, self.gf*8)
-            u2 = deconv2d(u1, d5, self.gf*8)
-            u3 = deconv2d(u2, d4, self.gf*8)
-            u4 = deconv2d(u3, d3, self.gf*4)
-            u5 = deconv2d(u4, d2, self.gf*2)
-            u6 = deconv2d(u5, d1, self.gf, dropout_rate=0.0)
+        # Upsampling
+        u1 = deconv2d(d7, d6, self.gf*8, dropout_rate=0.5)
+        u2 = deconv2d(u1, d5, self.gf*8, dropout_rate=0.5)
+        u3 = deconv2d(u2, d4, self.gf*8, dropout_rate=0.5)
+        u4 = deconv2d(u3, d3, self.gf*4, dropout_rate=0.5)
+        u5 = deconv2d(u4, d2, self.gf*2, dropout_rate=0.5)
+        u6 = deconv2d(u5, d1, self.gf)
 
-            u7 = UpSampling2D(size=2)(u6)
-            residual = Conv2D(self.model_channels, kernel_size=4, strides=1, padding='same', activation='tanh')(u7)
-            output_img = add([residual, d0]) #K.clip(add([residual, d0]), 0.0, 1.0)
+        u7 = UpSampling2D(size=2)(u6)
+        residual = Conv2D(self.model_channels, kernel_size=4, strides=1, padding='same', activation='tanh')(u7)
+        output_img = add([residual, d0]) #K.clip(add([residual, d0]), 0.0, 1.0)
 
-        else:
-            # Downsampling
-            d1 = conv2d(d0, self.gf, bn=False, dropout_rate=0.2) #32
-            d2 = conv2d(d1, self.gf*2) #16
-            d3 = conv2d(d2, self.gf*4) #8
-            d4 = conv2d(d3, self.gf*8) #4
-            d5 = conv2d(d4, self.gf*8) #2
-            d6 = conv2d(d5, self.gf*8) #1
-
-            # Upsampling
-            u1 = deconv2d(d6, d5, self.gf*8)                        #2
-            u2 = deconv2d(u1, d4, self.gf*8)                        #4
-            u3 = deconv2d(u2, d3, self.gf*8)                        #8
-            u4 = deconv2d(u3, d2, self.gf*4)                        #16
-            u5 = deconv2d(u4, d1, self.gf*2)                        #32
-            u6 = neural_upsampling(u5, self.gf, name = "u6")        #64
-            u7 = neural_upsampling(u6, self.gf, name = "u7")        #128
-            u8 = neural_upsampling(u7, self.gf, name = "u8")        #256
-            
-
-            output_img = Conv2D(self.model_channels, kernel_size=4, strides=1, padding='same', activation='tanh', name = "output_image")(u8)
-
-        return Model(d0, output_img)
+        return Model(inputs = d0, outputs = output_img, name = 'generator')
 
     def build_discriminator(self):
 
@@ -247,34 +195,29 @@ class Pix2Pix():
                 d = BatchNormalization(momentum=0.8)(d)
             return d
 
-
         #Is this getting the correct inputs?
-        img_A = Input(shape=(256, 256, 3), name = 'img_A')
-        img_B = Input(shape=self.img_shape, name = 'img_B')
+        img_A = Input(shape=self.img_shape)
+        #img_B = Input(shape=self.img_shape)
+
         # Concatenate image and conditioning image by channels to produce input
-        if self.interpolated:
-            combined_imgs = Concatenate(axis=-1)([img_A, img_B])
-        else:
-            upsampled_img_B = UpSampling2D(size=4)(img_B)
-            combined_imgs = Concatenate(axis=-1)([img_A, upsampled_img_B])
-    
-        
-        d1 = d_layer(combined_imgs, self.df, bn=False)
+        #combined_imgs = Concatenate(axis=-1)([img_A, img_B])
+
+        d1 = d_layer(img_A, self.df, bn=False)
         d2 = d_layer(d1, self.df*2)
         d3 = d_layer(d2, self.df*4)
         d4 = d_layer(d3, self.df*8)
-        validity = Conv2D(1, kernel_size=4, strides=1, padding='same')(d4)
+
+        
+        c1 = Conv2D(1, kernel_size=4, strides=1, padding='same')(d4)
+        flat = Flatten()(c1)
+        validity = Dense(1, activation="sigmoid", name = "discriminator_prediction")(flat)
+
+        return Model(inputs = img_A, outputs = validity, name = 'discriminator')
 
 
 
 
-
-        return Model([img_A, img_B], validity)
-
-
-
-
-    def train(self, epochs, batch_size=1, sample_interval=50, fuzzy_labels = False, noisy_inputs = False):
+    def train(self, epochs, batch_size=1, sample_interval=50):
 
         ts = time.gmtime()
         ts = time.strftime("%Y-%m-%d %H:%M:%S", ts)
@@ -289,101 +232,72 @@ class Pix2Pix():
         start_time = datetime.datetime.now()
 
         # Adversarial loss ground truths
-        valid = np.ones((batch_size,) + self.disc_patch)
-        fake = np.zeros((batch_size,) + self.disc_patch)
-        if fuzzy_labels:
-            valid = valid * 0.9
+        #Removed patch shape because I made the output of the gan a single softmaxed integer
+        #Intentionally flip os and ones as per https://github.com/soumith/ganhacks ?
+        #Intentionally make into range as per same site?
+        #smooth one side only and don't flip inputs with labels as per https://arxiv.org/pdf/1606.03498.pdf
+        valid = np.ones((batch_size, 1))*0.9#+ self.disc_patch)
+        fake = np.zeros((batch_size, 1))#+ self.disc_patch)
+        plot_model(self.discriminator, to_file='pix2pix_d.png')
+        plot_model(self.generator, to_file='pix2pix_g.png')
+        plot_model(self.combined, to_file='pix2pix_c.png')
+
 
         for epoch in range(epochs):
-            for batch_i, (imgs_A, imgs_B) in enumerate(self.data_loader.load_batch(batch_size, interpolation = self.interpolated)):
+            for batch_i, (imgs_A, imgs_B) in enumerate(self.data_loader.load_batch(batch_size)):
+                #Change scale from 0-1 to -1-1 for ease of convergence
+                imgs_A = imgs_A*2-1
+                imgs_B = imgs_B*2-1
 
-                # ---------------------
-                #  Train Discriminator
-                # ---------------------
-
-                # Condition on B and generate a translated version
-                if self.num_gpus>1:
-                    fake_A = self.generator_gpu.predict(imgs_B)
-                    # Train the discriminators (original images = real / generated = Fake)
-                    d_loss_real = self.discriminator_gpu.train_on_batch([imgs_A, imgs_B], valid)
-                    d_loss_fake = self.discriminator_gpu.train_on_batch([fake_A, imgs_B], fake)
-                    d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
-                    # -----------------
-                    #  Train Generator
-                    # -----------------
-
-                    # Train the generators
-                    if noisy_inputs:
-                        input_noise = np.random.normal(loc = 0.0, scale = 0.05, size = imgs_B.shape)
-                        g_loss = self.combined_gpu.train_on_batch([imgs_A, imgs_B+input_noise], [valid, imgs_A])
-                    else:
-                        g_loss = self.combined_gpu.train_on_batch([imgs_A, imgs_B], [valid, imgs_A])
-                else:
-                    fake_A = self.generator.predict(imgs_B)
-                    d_loss_real = self.discriminator.train_on_batch([imgs_A, imgs_B], valid)
-                    d_loss_fake = self.discriminator.train_on_batch([fake_A, imgs_B], fake)
-                    d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
-                    if noisy_inputs:
-                        input_noise = np.random.normal(loc = 0.0, scale = 0.05, size = imgs_B.shape)
-                        g_loss = self.combined.train_on_batch([imgs_A, imgs_B+input_noise], [valid, imgs_A])
-                    else:
-                        g_loss = self.combined.train_on_batch([imgs_A, imgs_B], [valid, imgs_A])
-
-
-                ###coppied from unconditional GAN start
-                d_loss_real = 0
-                d_acc_real  = 0
-                d_loss_fake = 0
-                d_acc_fake  = 0
-                d_penalty   = 0
-                g_loss      = 0
-                c_loss      = 0
-
-                print("Evaluating Model")
-                for batch_i_eval, (imgs_A_eval, imgs_B_eval) in enumerate(self.data_loader.load_batch(batch_size, interpolation = self.interpolated)):
-                    fake_A = self.generator.predict(imgs_B)
-
-                    import ipdb; ipdb.set_trace()
-                    d_stats_real = self.discriminator.evaluate(imgs_A[0], valid, verbose = 0)
-                    d_loss_real = d_loss_real + d_stats_real[0]/self.data_loader.n_batches
-                    d_acc_real = d_acc_real + d_stats_real[1]/self.data_loader.n_batches
-
-                    d_stats_fake = self.discriminator.evaluate(fake_A, fake, verbose = 0)
-                    d_loss_fake = d_loss_fake + d_stats_fake[0]/self.data_loader.n_batches
-                    d_acc_fake = d_acc_fake + d_stats_fake[1]/self.data_loader.n_batches
-
-                    c_stats = self.combined.evaluate(imgs_B, [valid, imgs_A], verbose = 0)
-                    d_penalty = d_penalty + c_stats[1]/self.data_loader.n_batches
-                    g_loss = g_loss + c_stats[2]/self.data_loader.n_batches
-                    c_loss = c_loss + c_stats[0]/self.data_loader.n_batches
-
-
-
-
-                #import ipdb; ipdb.set_trace()
-                elapsed_time = datetime.datetime.now() - start_time
-                print ("[Epoch %d/%d] [Batch %d/%d] [D loss real: %f, acc real: %3d%%] [D loss fake: %f, acc fake: %3d%%] [D Penalty: %f] [G Loss: %f] [C loss: %f] time: %s" % (epoch, epochs,
-                                                                    batch_i, self.data_loader.n_batches,
-                                                                    d_loss_real, 100*d_acc_real, d_loss_fake, 100*d_acc_fake, d_penalty,
-                                                                    g_loss, c_loss,
-                                                                    elapsed_time))               
-
-
-                ###coppied from unconditional GAN end
-                self.sample_images(epoch, batch_i, is_testing=False)
-                # If at save interval => save generated image samples
                 if epoch % sample_interval == 0 and batch_i == 0:
-                    '''
+                    #import ipdb; ipdb.set_trace()
+                    #d_penalty = self.discriminator.evaluate(fake_A, valid, verbose = 0)
+                    #d_acc_real = self.discriminator.evaluate(imgs_A, valid, verbose = 0)
+                    #d_acc_fake = self.discriminator.evaluate(fake_A, fake, verbose = 0)
+                    #d_real_preds = self.discriminator.predict(imgs_A)
+                    #d_fake_preds = self.discriminator.predict(fake_A)
+                    #c_acc = self.combined.evaluate(imgs_B, [valid, imgs_A])
+                    d_loss_real = 0
+                    d_acc_real  = 0
+                    d_loss_fake = 0
+                    d_acc_fake  = 0
+                    d_penalty   = 0
+                    g_loss      = 0
+                    c_loss      = 0
+
+                    print("Evaluating Model")
+                    for batch_i_eval, (imgs_A_eval, imgs_B_eval) in enumerate(self.data_loader.load_batch(batch_size)):
+                        fake_A = self.generator.predict(imgs_B)
+
+                        d_stats_real = self.discriminator.evaluate(imgs_A, valid, verbose = 0)
+                        d_loss_real = d_loss_real + d_stats_real[0]/self.data_loader.n_batches
+                        d_acc_real = d_acc_real + d_stats_real[1]/self.data_loader.n_batches
+
+                        d_stats_fake = self.discriminator.evaluate(fake_A, fake, verbose = 0)
+                        d_loss_fake = d_loss_fake + d_stats_fake[0]/self.data_loader.n_batches
+                        d_acc_fake = d_acc_fake + d_stats_fake[1]/self.data_loader.n_batches
+
+                        c_stats = self.combined.evaluate(imgs_B, [valid, imgs_A], verbose = 0)
+                        d_penalty = d_penalty + c_stats[1]/self.data_loader.n_batches
+                        g_loss = g_loss + c_stats[2]/self.data_loader.n_batches
+                        c_loss = c_loss + c_stats[0]/self.data_loader.n_batches
+
+
+
+
+                    #import ipdb; ipdb.set_trace()
                     elapsed_time = datetime.datetime.now() - start_time
-                    print ("[Epoch %d/%d] [Batch %d/%d] [D loss: %f, acc: %3d%%] [G loss: %f] time: %s" % (epoch, epochs,
+                    print ("[Epoch %d/%d] [Batch %d/%d] [D loss real: %f, acc real: %3d%%] [D loss fake: %f, acc fake: %3d%%] [D Penalty: %f] [G Loss: %f] [C loss: %f] time: %s" % (epoch, epochs,
                                                                         batch_i, self.data_loader.n_batches,
-                                                                        d_loss[0], 100*d_loss[1],
-                                                                        g_loss[0],
+                                                                        d_loss_real, 100*d_acc_real, d_loss_fake, 100*d_acc_fake, d_penalty,
+                                                                        g_loss, c_loss,
                                                                         elapsed_time))
                     #self.sample_images(epoch, batch_i, is_testing=True)
-                    #self.sample_images(epoch, batch_i, is_testing=False)
-                    '''
-                    if epoch % (sample_interval*100) == 0 and batch_i == 0:
+                    self.sample_images(epoch, batch_i, is_testing=False)
+
+                    if False:#epoch % (sample_interval*10) == 0 and batch_i == 0:
+                        #import ipdb; ipdb.set_trace()
+                        #print("Not saving model for debug")
                         #save model
                         filepath = 'weights/generator/'+ts+'/epoch_'+str(epoch)+'.hdf5'
                         self.generator.save(filepath)
@@ -402,16 +316,48 @@ class Pix2Pix():
                         #evaluate Kris and Emma's validation data
                         #full_image_save_path = "images/%s/%d_%d_full_val_Kris_and_Emma_image.tif" % (self.dataset_name, epoch, batch_i)
                         #self.evaluate('D:/Projects/Github/Super Resolution/Code/Planar Super Resolution/pix2pix/Test outputs/emma_test_slice_four_channel.tif', save_path = full_image_save_path, self_ensemble = False, zoom_level = 16, img_channels = 4)
-                        #full_image_save_path = "images/%s/%d_%d_full_val cell #1 area 9 dapi.tif" % (self.dataset_name, epoch, batch_i)
-                        #self.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C3-cell #1 area 9 low res.tif', save_path = full_image_save_path, self_ensemble = False, zoom_level = 8, img_channels = 1, overlap = False)
+                        full_image_save_path = "images/%s/%d_%d_full_val cell #1 area 9 dapi.tif" % (self.dataset_name, epoch, batch_i)
+                        self.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C3-cell #1 area 9 low res.tif', save_path = full_image_save_path, self_ensemble = False, zoom_level = 8, img_channels = 1, overlap = False)
                         #full_image_save_path = "images/%s/%d_%d_full_val cell #1 area 9 fibers.tif" % (self.dataset_name, epoch, batch_i)
                         #self.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C2-cell #1 area 9 low res.tif', save_path = full_image_save_path, self_ensemble = False, zoom_level = 8, img_channels = 1, overlap = False)
 
-                    
+                # ---------------------
+                #  Train Discriminator
+                # ---------------------
+
+                # Condition on B and generate a translated version
+                fake_A = self.generator.predict(imgs_B)
+
+                # Train the discriminators (original images = real / generated = Fake)
+                #import ipdb; ipdb.set_trace()
+                d_loss_real = self.discriminator.train_on_batch(x = imgs_A, y = valid)
+                d_loss_fake = self.discriminator.train_on_batch(x = fake_A, y = fake)
+                
+                d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
+
+                #import ipdb; ipdb.set_trace()
+                
+                # -----------------
+                #  Train Generator
+                # -----------------
+
+                # Train the generators
+                c_loss = self.combined.train_on_batch(imgs_B, [valid, imgs_A])
+
+                
+                #print(g_loss)
+
+                
+                # Plot the progress
+
+                # If at save interval => save generated image samples
+
 
                     
 
-    def evaluate(self, full_image_path = None, save_path = "full_output.tif", self_ensemble = False, zoom_level = 1, interpolate_only = False, img_channels = 3, clip_extreme_patches = False, overlap = True, img_dimension = 4096):
+                    
+
+    def evaluate(self, full_image_path = None, save_path = "full_output.tif", self_ensemble = False, zoom_level = 1, interpolate_only = False, img_channels = 3, clip_extreme_patches = False, overlap = True):
 
         if full_image_path != None:
             print(full_image_path)
@@ -419,10 +365,10 @@ class Pix2Pix():
             filenames_low_res = [full_image_path]
             num_images = len(filenames_low_res)
             #if zoom_level>1:
-            size_low_res  = [num_images, int(img_dimension/zoom_level), int(img_dimension/zoom_level), img_channels]
+            size_low_res  = [num_images, int(4096/zoom_level), int(4096/zoom_level), img_channels]
             #else:
             #    size_low_res  = [num_images, 4096, 4096, self.model_channels]
-            size_high_res  = [num_images, img_dimension, img_dimension, img_channels]
+            size_high_res  = [num_images, 4096, 4096, img_channels]
             inputs_low_res = np.empty(size_low_res, np.float64)
 
             if ".oir" in full_image_path:
@@ -442,7 +388,7 @@ class Pix2Pix():
                     #import ipdb; ipdb.set_trace()
                     im.seek(i)
                     inputs_low_res[:, :, :, i] = np.array(im)
-                #scale intensities before putting into network
+                #import ipdb; ipdb.set_trace()
                 inputs_low_res = inputs_low_res/np.max(inputs_low_res)
                 #if num_images == 1:
                 #    inputs_low_res = np.expand_dims(inputs_low_res, axis = 0)
@@ -457,45 +403,24 @@ class Pix2Pix():
                         #import ipdb; ipdb.set_trace()
                         inputs_high_res[i, :, :, c] = np.clip(zoom(inputs_low_res[i, :, :, c], zoom=zoom_level), 0, 1) #setting upper limit to 0.5 in attempt to eliminate artifacts didn't work
 
-
-            if False:
-                single_channel_input = np.zeros([1, img_dimension, img_dimension, 3])
-                for model_channel in range(self.model_channels):
-                    single_channel_input[0, :, :, model_channel] = inputs_high_res[0, :, :, 0]
-                y_pred = self.generator.predict(single_channel_input)
-                y_pred = np.clip(y_pred, 0, 1)
-                y_pred = (y_pred*65535).astype('uint16')
-                imlist = []
-                imlist.append(Image.fromarray(y_pred[:, :, 1]))
-
-                imlist[0].save(save_path, compression = None, save_all = True, append_images=imlist[1:])
-
-                return
-
-
             if overlap:
-                if self.interpolated:
-                    tiles_per_image = 961
-                else:
-                    tiles_per_image = 225
+                tiles_per_image = 961
             else:
-                if self.interpolated:
-                    tiles_per_image = 256
-                else:
-                    tiles_per_image = 64
-
+                tiles_per_image = 256
 
             x = np.empty([tiles_per_image*num_images, self.img_rows, self.img_cols, img_channels]) #256
             for c in range(img_channels):
                 x[:, :, :, c] = crop(inputs_high_res[:, :, :, c], self.img_rows, self.img_cols, buffer_pixels, overlap=overlap)
                 
+            #Change scale from 0-1 to -1-1    
+            x=x*2-1
 
             if interpolate_only:
                 y_pred = x
                 
 
             else:
-                y_pred = np.zeros([tiles_per_image*num_images, 256, 256, img_channels])
+                y_pred = np.zeros_like(x)
                 for c in range(img_channels):
                     single_channel_input = np.empty([tiles_per_image*num_images, self.img_rows, self.img_cols, self.model_channels])
                     for model_channel in range(self.model_channels):
@@ -551,21 +476,26 @@ class Pix2Pix():
                     y_pred[:, :, :, c] = y_pred_single_channel
 
 
-            
-            y_pred_stitched = np.empty([2048, 2048, img_channels])
+
+            y_pred_stitched = np.empty([4096, 4096, img_channels])
             for c in range(img_channels):
-                y_pred_stitched[:, :, c] = stitch(y_pred[:, :, :, c], [2048, 2048, 1, 1], [256, 256], buffer_pixels, overlap = overlap)
+                y_pred_stitched[:, :, c] = stitch(y_pred[:, :, :, c], [4096, 4096, 1, 1], [self.img_rows, self.img_cols], buffer_pixels, overlap = overlap)
 
 
-            import ipdb; ipdb.set_trace()
+            #Change scale from -1-1 to 0-1    
+            y_pred_stitched =(y_pred_stitched+1)/2
             y_pred_stitched = np.clip(y_pred_stitched, 0, 1)
             y_pred_stitched = (y_pred_stitched*65535).astype('uint16')
+            #import ipdb; ipdb.set_trace()
             imlist = []
-
             for c in range(img_channels):
+                #imlist.append(Image.fromarray(inputs_low_res[:, :, c]))
                 imlist.append(Image.fromarray(y_pred_stitched[:, :, c]))
+            #import ipdb; ipdb.set_trace()
 
             imlist[0].save(save_path, compression = None, save_all = True, append_images=imlist[1:])
+            #im = Image.fromarray(y_pred_stitched)
+            #im.save(save_path)
 
         else:
             self.sample_images(-1, -1, is_testing=True)
@@ -576,21 +506,11 @@ class Pix2Pix():
         os.makedirs('images/%s' % self.dataset_name, exist_ok=True)
         r, c = 1, 3
 
-        imgs_A, imgs_B = self.data_loader.load_data(batch_size=r, is_testing=is_testing, interpolation = self.interpolated)
-        #import ipdb; ipdb.set_trace()
-        test = np.concatenate(imgs_B, axis = 0)
-        fake_A = self.generator.predict(np.expand_dims(test, axis = 0)) #np.expand_dims(imgs_B, axis = 0)
-
-
-        #import ipdb; ipdb.set_trace()
-        #imgs_A[0] = scipy.misc.imresize(imgs_A[0], (256, 256))
-        imgs_B[0] = scipy.misc.imresize(imgs_B[0], (256, 256))/255.0
-        #fake_A[0] = scipy.misc.imresize(fake_A[0], (256, 256))
+        imgs_A, imgs_B = self.data_loader.load_data(batch_size=r, is_testing=is_testing)
+        fake_A = self.generator.predict(imgs_B)
 
         gen_imgs = np.concatenate([imgs_B, fake_A, imgs_A])
         gen_imgs = np.clip(gen_imgs, 0, 1)
-
-        #import ipdb; ipdb.set_trace()
 
         titles = ['Low Res', 'High Res Reconstruction', 'High Res Ground Truth']
 
@@ -611,44 +531,10 @@ class Pix2Pix():
 
 if __name__ == '__main__':
     jv.start_vm(class_path=bf.JARS)
-    gan = Pix2Pix(load_weights = False, interpolated = False)#, timestamp_and_epoch_to_load='2018_12_04_21_42_20/epoch_9000')
-    
-
-    #2018_12_04_21_42_20/epoch_9000    six hours of non-interpolated medium res nuclei trianing
+    gan = Pix2Pix(load_weights = False)#True, timestamp_and_epoch_to_load='2018_11_26_21_24_52/epoch_1300')
 
 
-
-
-    #fiber_gan = Pix2Pix(load_weights = True, timestamp_and_epoch_to_load='2018_12_01_17_23_36/epoch_1130')
-    #nuclei_gan = Pix2Pix(load_weights = True, timestamp_and_epoch_to_load='2018_12_01_17_24_10/epoch_250')
-
-    #Training from Saturday morning till Monday morning
-    #2018_12_01_17_33_42/epoch_8700    Tesla V100  #default nuclei the entire thing is high intensity artifacts basically
-    #2018_12_01_20_28_29/epoch_2000    Tesla K80   #default fibers lots of high intensity artifacts
-    #2018_12_01_17_26_06/epoch_400     Tesla K20Xm #random noise nuclei again, tons of high intensity artifacts otherwise better than default
-    #2018_12_01_17_26_03/epoch_2000    Tesla K20Xm #random noise fibers again, tons of high intensity artifacts otherwise better than default
-    #2018_12_01_17_27_20/epoch_400     Tesla K20Xm #fuzzy labels nuclei awful at empty space again. Areas with something better than default
-    #2018_12_01_17_30_03/epoch_1500    Tesla K20Xm #fuzzy labels fibers awful at empty space again.
-
-    #earlier epochs for apples to apples comparison
-    #2018_12_01_17_33_42/epoch_400     Tesla V100  #default nuclei #looks absolutely terrible
-    #2018_12_01_20_28_29/epoch_1500    Tesla K80   #default fibers #lots of high intensity artifacts but sort of smooth. Not much tiling artifacts
-    
-    #2018_11_28_19_15_27/epoch_700    #loaded from 2018_11_12_14_32_11/epoch_40 trained on ch1 only. Looks pretty good. Definitely better than interpolated. One minor high intensity artifact.
-    #2018_11_28_14_21_42/epoch_800    #fibers. Clearer, straighter lines with fewer stitching and high intensity artifacts.
-    #2018_11_27_14_06_03/epoch_1700   #dapi. Looks very similar to epoch 800 of same network. 
-
-
-    #2018_11_28_14_21_42/epoch_200 fewer extreme artifacts than epoch 100. a little fewer stitching artifacts too. Maybe slightly more small scale pattern artifacts
-    #2018_11_28_14_21_42/epoch_100 loading from 2018_11_12_14_32_11/epoch_40 and training on fibers only. High intensity artifacts are prevelent. Fibers are pretty sharp but a bit wavy. Sharper than 2018_11_12_14_32_11/epoch_40. Keep training
-
-    #2018_11_27_13_56_01/epoch_900 attempt at re-creating 1/20 results with model starting from scratch. Trained overnight. Looks decent. Similar to 2018_11_20_21_31_13/epoch_1100. kill
-    #2018_11_27_14_06_03/epoch_800 attempt at re-creating 1/20 results with model starting from 2018_11_12_14_32_11/epoch_40. Trained overnight. Similar to 2018_11_27_14_06_03/epoch_200 but with fewer small scale artifacts
-    #2018_11_27_19_19_04/epoch_700 attempt at re-creating 1/20 results with model starting from 2018_11_20_21_31_13/epoch_1100. Trained overnight. Almost identical to 2018_11_20_21_31_13/epoch_1100. kill
-
-
-    #2018_11_27_14_06_03/epoch_200  #attempt at re-creating 1/20 results with model starting from 2018_11_12_14_32_11/epoch_40. Some small scale local artifacts but overall not too bad, may actually benefit from TV loss. Higher contrast than 11/20 version. Probably needs more training time.
-
+    #2018_11_26_21_24_52/epoch_1300 non-conditional gan trained overnight. No real improvement over interpolation. Not pre-trained. 
 
     #Runs trained over Thanksgiving
     #2018_11_21_18_51_22/epoch_4500
@@ -711,41 +597,22 @@ if __name__ == '__main__':
     #2018_11_07_14_47_49/epoch_146
     #gan.evaluate(full_image_path = 'D:/Projects/Github/Super Resolution/Code/Planar Super Resolution/pix2pix/Test outputs/cory_original.tiff',              
     #    save_path = "full_output_cory.tif", self_ensemble = False, zoom_level = 4, interpolate_only=False, img_channels = 3, clip_extreme_patches = False) 
-    #fiber_gan.evaluate(full_image_path = 'D:/Projects/Github/Super Resolution/Code/Planar Super Resolution/pix2pix/Test outputs/C1-cory_original.tif',              
-    #    save_path = "C1_output_cory.tif", self_ensemble = False, zoom_level = 4, interpolate_only=True, img_channels = 1, clip_extreme_patches = False) 
-    #fiber_gan.evaluate(full_image_path = 'D:/Projects/Github/Super Resolution/Code/Planar Super Resolution/pix2pix/Test outputs/C2-cory_original.tif',              
-    #    save_path = "C2_output_cory.tif", self_ensemble = False, zoom_level = 4, interpolate_only=True, img_channels = 1, clip_extreme_patches = False) 
-    #nuclei_gan.evaluate(full_image_path = 'D:/Projects/Github/Super Resolution/Code/Planar Super Resolution/pix2pix/Test outputs/C3-cory_original.tif',              
-    #    save_path = "C3_output_cory.tif", self_ensemble = False, zoom_level = 4, interpolate_only=True, img_channels = 1, clip_extreme_patches = False) 
     #gan.evaluate(full_image_path = 'D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/cell area 1 low res.oir',                                   
     #    save_path = "full_output_cell.tif", self_ensemble = False, zoom_level = 8, interpolate_only=False, img_channels = 3) 
     #gan.evaluate(full_image_path = 'D:/Projects/Github/Super Resolution/Code/Planar Super Resolution/pix2pix/Test outputs/emma_test_slice_four_channel.tif', 
     #    save_path = "full_output_emma.tif", self_ensemble = False, zoom_level = 16, interpolate_only=True, img_channels = 4)
     #gan.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C3-cell #1 area 8 low res.tif', 
     #    save_path = "full_output_cell_nuclei_train_#1.tif", self_ensemble = False, zoom_level = 8, interpolate_only=False, img_channels = 1, overlap = False)
-    #nuclei_gan.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C3-cell #1 area 9 low res.tif', 
-    #    save_path = "full_output_cell_nuclei_#1.tif", self_ensemble = False, zoom_level = 8, interpolate_only=False, img_channels = 1, overlap = True)
-    #fiber_gan.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C2-cell #1 area 9 low res.tif', 
-    #    save_path = "full_output_cell_fibers_#1.tif", self_ensemble = False, zoom_level = 8, interpolate_only=False, img_channels = 1, overlap = True, clip_extreme_patches = False)
-    #gan.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C1-cell #1 area 9 low res.tif', 
-    #    save_path = "full_output_cell_ch1_#1.tif", self_ensemble = False, zoom_level = 8, interpolate_only=False, img_channels = 1, overlap = True, clip_extreme_patches = False)
+    #gan.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C3-cell #1 area 9 low res.tif', 
+    #    save_path = "full_output_cell_nuclei_#1.tif", self_ensemble = False, zoom_level = 8, interpolate_only=False, img_channels = 1, overlap = False)
+    #gan.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C2-cell #1 area 9 low res.tif', 
+    #    save_path = "full_output_cell_fibers_#1.tif", self_ensemble = False, zoom_level = 8, interpolate_only=False, img_channels = 1, overlap = False)
     #gan.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C3-cell area 1 low res.tif', 
-    #    save_path = "full_output_cell_area_1_ch3.tif", self_ensemble = False, zoom_level = 8, interpolate_only=False, img_channels = 1, overlap = False)
-    #gan.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C2-cell area 1 low res.tif', 
-    #    save_path = "full_output_cell_area_1_ch2.tif", self_ensemble = False, zoom_level = 8, interpolate_only=True, img_channels = 1, overlap = False)
-    #gan.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C1-cell area 1 low res.tif', 
-    #    save_path = "full_output_cell_area_1_ch1.tif", self_ensemble = False, zoom_level = 8, interpolate_only=True, img_channels = 1, overlap = False)
+    #    save_path = "full_output_cell_area_1.tif", self_ensemble = False, zoom_level = 8, interpolate_only=True, img_channels = 1, overlap = False)
     #gan.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C3-mouse placenta area1 low res.tif', 
     #    save_path = "full_output_mouse_placenta_1.tif", self_ensemble = False, zoom_level = 8, interpolate_only=True, img_channels = 1, overlap = False)
-
-    #gan.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/2048 nuclei training images/human lung 2 area3 L.tif', 
-    #    save_path = "medium_res_nuclei_human_lung_2_area_4.tif", self_ensemble = False, zoom_level = 1, interpolate_only=False, img_channels = 1, overlap = False, img_dimension = 512)
-
-
     #'D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/cell area 1 low res.oir' 
     #'D:/Projects/Github/Super Resolution/Code/Planar Super Resolution/pix2pix/full_output_57_self_ensemble.tif'
-    gan.train(epochs=10000, batch_size=8, sample_interval=10, fuzzy_labels = True, noisy_inputs = True)
-
-
+    gan.train(epochs=100000000, batch_size=8, sample_interval=1)
     jv.kill_vm()
     print("EOF: Run Successful")
