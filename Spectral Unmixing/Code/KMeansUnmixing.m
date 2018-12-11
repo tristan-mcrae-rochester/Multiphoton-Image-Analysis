@@ -145,7 +145,7 @@ function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluor
     
     unmixed_image = unmixed_image/max(unscaled_mixed_image(:));
     
-    write_tiff(unmixed_image, '4d single tiff test save.tif', save_type);
+    write_tiff(unmixed_image, 'test_multi_tiff_save', save_type); %4d single tiff test save.tif
 
 end 
 
@@ -159,15 +159,27 @@ function mixed_image = read_image_from_path(image_path, num_channels, num_timest
     elseif extension == "oir"
         mixed_image = read_oir(image_path, num_channels, num_timesteps);
     elseif extension == "oif"
-
+        mixed_image = read_oif(image_path, num_channels, num_timesteps);
     else
         disp(strcat(extension, " is an unrecognized file type"))
     end    
 
 end
 
-function image = read_oif(image_path, num_channels, num_timesteps)
-
+function mixed_image = read_oif(image_path, num_channels, num_timesteps)
+    data = bfopen(image_path);
+    [num_images, unused] = size(data{1, 1});
+    [n_rows, n_cols] = size(data{1, 1}{1, 1});
+    num_slices = (num_images/num_channels)/num_timesteps;
+    mixed_image = zeros(n_rows, n_cols, num_slices, num_channels, num_timesteps); 
+    
+    for t = 1:num_timesteps
+        for z = 1:num_slices
+           for c = 1:num_channels
+               mixed_image(:, :, z, c, t) = data{1, 1}{(t-1)*num_channels*num_slices+(z-1)*num_channels+c, 1};
+           end
+       end
+    end
 end
 
 function mixed_image = read_oir(image_path, num_channels, num_timesteps)
@@ -179,17 +191,10 @@ function mixed_image = read_oir(image_path, num_channels, num_timesteps)
     for z = 1:num_slices
        for t = 1:num_timesteps
            for c = 1:num_channels
-               %disp([z, c, t, (z-1)*num_channels*num_timesteps+(t-1)*num_channels+c])
                mixed_image(:, :, z, c, t) = data{1, 1}{(z-1)*num_channels*num_timesteps+(t-1)*num_channels+c, 1};
            end
        end
     end
-    
-    %scale
-    %mixed_image = (mixed_image/max(mixed_image(:)));
-    
-    %write_tiff(mixed_image, '4d single tiff test save.tif', "single_tiff")
-    
 end
 
 function mixed_image = read_tiff(num_channels, fname, num_timesteps, start_slice, stop_slice)
@@ -237,9 +242,23 @@ end
 
 function write_tiff(image, fname, save_type)
     dims = size(image);
-    num_slices = dims(3)
-    num_channels = dims(4)
-    num_timesteps = dims(5)
+    
+    if length(dims) >=3
+        num_slices = dims(3)
+    else
+        num_slices = 1  
+    end
+    if length(dims) >= 4
+        num_channels = dims(4)
+    else
+        num_channels = 1   
+    end
+    if length(dims) >= 5
+        num_timesteps = dims(5)
+    else
+        num_timesteps = 1
+    end
+        
     
     if save_type == "single_tiff"
         delete(fname)

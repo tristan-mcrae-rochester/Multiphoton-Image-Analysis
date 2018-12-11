@@ -53,6 +53,9 @@ else
     vImarisApplication = vImarisLib.GetApplication(aImarisApplicationID);
 end
 
+%Set up progress bar
+vProgressDisplay = waitbar(0,'Spectral Unmixing:Loading Data...');
+
 disp('Finding the dataset properties')
 % Get the vDataSet object
 vDataSet = vImarisApplication.GetDataSet();
@@ -75,6 +78,7 @@ stack = zeros([x_dim, y_dim, z_dim, num_channels, num_timesteps], datatype);
 basic_stack = zeros([x_dim, y_dim, z_dim], datatype);
 % Get the pixel data
 for t = 1:num_timesteps
+    waitbar(0.1*t/num_timesteps);
     disp(strcat("Reading timestep ", int2str(t), " of ", int2str(num_timesteps)))
     pause(0.01) %let the display catch up
     for c = 1:num_channels
@@ -101,7 +105,11 @@ end
 
 unmixed_image  = spectral_unmixing_gui(num_channels, num_timesteps, stack);
 disp('returning image')
+close all;
+vProgressDisplay = waitbar(0.8,'Returning Image to Imaris');
 return_results_to_imaris(unmixed_image, vDataSet, num_timesteps, vImarisApplication);
+
+close all
 
 end
 
@@ -201,10 +209,12 @@ function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluor
     multi_fluorophore_pixels = true
     background_threshold = 0.00;
     maximum_iterations = 100;
-    channels = 1:num_channels;
+    channels = 1:num_channels
     channels_to_leave = channels(~ismember(channels, channels_to_unmix));
     num_fluorophores_to_unmix = num_fluorophores_to_unmix+background_as_cluster;
-
+    channels_to_unmix
+    
+    
     
     disp(num_timesteps)
     disp(size(mixed_image))
@@ -216,8 +226,10 @@ function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluor
     %Scale pixels for clustering only
     if scaled_signatures
         disp("Scaling pixel intensities")
-        mixed_image(:, :, :, channels_to_unmix, :) = mixed_image(:, :, :, channels_to_unmix, :)./max(mixed_image(:, :, :, channels_to_unmix, :), [], 4); %change to just be for channels we're unmixing
+        mixed_image(:, :, :, channels_to_unmix, :) = mixed_image(:, :, :, channels_to_unmix, :)./max(mixed_image(:)); %change to just be for channels we're unmixing
     end
+    
+    
     
     representitive_timestep = int32(num_timesteps/2)
     if num_timesteps>1
@@ -237,14 +249,19 @@ function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluor
     foreground_pixels = pixel_sums > background_threshold;
     pixel_array(~foreground_pixels)=0;
 
+    
+    %select just the channels you want to unmix
     pixel_array = pixel_array(:, channels_to_unmix); 
 
     
       
     close all;    
+    vProgressDisplay = waitbar(0.2,'Spectral Unmixing:Running K-Means...');
     disp('Running K-Means. The display may freeze but it is still working behind the scenes. This may take a few minutes for large datasets.')
     [cluster_indices, cluster_centroids, sumd, D] = kmeans(pixel_array, num_fluorophores_to_unmix, 'Replicates', replicates, 'MaxIter', maximum_iterations, 'Display', 'iter');%, 'Start', initial_centroids);
     disp('Finished Running k-means')
+    close all;
+    vProgressDisplay = waitbar(0.5,'Spectral Unmixing:Finished Running K-Means...');
     pause(0.01) %let the display catch up
     
     
@@ -276,9 +293,12 @@ function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluor
             end
         end
     end
+    close all;
+    vProgressDisplay = waitbar(0.5,'Applying clustering to data');
     
     for t = 1:num_timesteps
         disp(strcat("applying clustering to timestep ", int2str(t), " of ", int2str(num_timesteps)))
+        waitbar(0.5+0.3*t/num_timesteps);
         if multi_fluorophore_pixels
             if num_timesteps == 1
                 inverse_square_weights = 1./D.^2;
@@ -326,6 +346,7 @@ function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluor
         unmixed_image(:, :, :, 1:length(channels_to_leave), :) = mixed_image(:, :, :, channels_to_leave, :);
     end
     unmixed_image(:, :, :, length(channels_to_leave)+1:end, :) = cluster_weights_image;
+    
 
 end %breakpoint
 
@@ -398,6 +419,7 @@ vDataSet.SetSizeC(num_output_channels);
 
 for t = 1:num_timesteps
     disp(strcat("returning timestep ", int2str(t), " of ", int2str(num_timesteps)))
+    waitbar(0.8+0.2*t/num_timesteps)
     pause(0.01)
     for c = 1:num_output_channels
         basic_stack = unmixed_image(:, :, :, c, t);
@@ -413,6 +435,9 @@ for t = 1:num_timesteps
     end
 end
 
+close all;
+vProgressDisplay = waitbar(1,'Done');
+close(vProgressDisplay) %End progress bar display
 vImarisApplication.SetDataSet(vDataSet);
 
 
