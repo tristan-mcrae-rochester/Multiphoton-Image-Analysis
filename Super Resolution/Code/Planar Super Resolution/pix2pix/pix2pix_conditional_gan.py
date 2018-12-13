@@ -285,17 +285,28 @@ class Pix2Pix():
         os.makedirs('weights/discriminator/'+ts)
         os.makedirs('weights/combined/'+ts)
 
+        print(ts, flush = True)
+
 
         start_time = datetime.datetime.now()
 
         # Adversarial loss ground truths
-        valid = np.ones((batch_size,) + self.disc_patch)
+        valid_ones = np.ones((batch_size,) + self.disc_patch)
         fake = np.zeros((batch_size,) + self.disc_patch)
         if fuzzy_labels:
-            valid = valid * 0.9
+            valid = valid_ones * 0.9
+        else:
+            valid = valid_ones
 
         for epoch in range(epochs):
-            for batch_i, (imgs_A, imgs_B) in enumerate(self.data_loader.load_batch(batch_size, interpolation = self.interpolated)):
+            batches = list(self.data_loader.load_batch(batch_size, interpolation = self.interpolated))[0]
+            batches_A = np.asarray(batches[0])
+            batches_B = np.asarray(batches[1])
+            
+            for batch_i in range(len(batches_A)):
+                imgs_A = batches_A[batch_i]
+                imgs_B = batches_B[batch_i]
+                
 
                 # ---------------------
                 #  Train Discriminator
@@ -324,55 +335,63 @@ class Pix2Pix():
                     d_loss_fake = self.discriminator.train_on_batch([fake_A, imgs_B], fake)
                     d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
                     if noisy_inputs:
-                        input_noise = np.random.normal(loc = 0.0, scale = 0.05, size = imgs_B.shape)
+                        input_noise = np.random.normal(loc = 0.0, scale = 0.001, size = imgs_B.shape)
                         g_loss = self.combined.train_on_batch([imgs_A, imgs_B+input_noise], [valid, imgs_A])
                     else:
                         g_loss = self.combined.train_on_batch([imgs_A, imgs_B], [valid, imgs_A])
 
 
                 ###coppied from unconditional GAN start
-                d_loss_real = 0
-                d_acc_real  = 0
-                d_loss_fake = 0
-                d_acc_fake  = 0
-                d_penalty   = 0
-                g_loss      = 0
-                c_loss      = 0
-
-                print("Evaluating Model")
-                for batch_i_eval, (imgs_A_eval, imgs_B_eval) in enumerate(self.data_loader.load_batch(batch_size, interpolation = self.interpolated)):
-                    fake_A = self.generator.predict(imgs_B)
-
-                    import ipdb; ipdb.set_trace()
-                    d_stats_real = self.discriminator.evaluate(imgs_A[0], valid, verbose = 0)
-                    d_loss_real = d_loss_real + d_stats_real[0]/self.data_loader.n_batches
-                    d_acc_real = d_acc_real + d_stats_real[1]/self.data_loader.n_batches
-
-                    d_stats_fake = self.discriminator.evaluate(fake_A, fake, verbose = 0)
-                    d_loss_fake = d_loss_fake + d_stats_fake[0]/self.data_loader.n_batches
-                    d_acc_fake = d_acc_fake + d_stats_fake[1]/self.data_loader.n_batches
-
-                    c_stats = self.combined.evaluate(imgs_B, [valid, imgs_A], verbose = 0)
-                    d_penalty = d_penalty + c_stats[1]/self.data_loader.n_batches
-                    g_loss = g_loss + c_stats[2]/self.data_loader.n_batches
-                    c_loss = c_loss + c_stats[0]/self.data_loader.n_batches
-
-
-
-
-                #import ipdb; ipdb.set_trace()
-                elapsed_time = datetime.datetime.now() - start_time
-                print ("[Epoch %d/%d] [Batch %d/%d] [D loss real: %f, acc real: %3d%%] [D loss fake: %f, acc fake: %3d%%] [D Penalty: %f] [G Loss: %f] [C loss: %f] time: %s" % (epoch, epochs,
-                                                                    batch_i, self.data_loader.n_batches,
-                                                                    d_loss_real, 100*d_acc_real, d_loss_fake, 100*d_acc_fake, d_penalty,
-                                                                    g_loss, c_loss,
-                                                                    elapsed_time))               
-
-
-                ###coppied from unconditional GAN end
-                self.sample_images(epoch, batch_i, is_testing=False)
+                
                 # If at save interval => save generated image samples
                 if epoch % sample_interval == 0 and batch_i == 0:
+                    d_loss_real = 0
+                    d_acc_real  = 0
+                    d_loss_fake = 0
+                    d_acc_fake  = 0
+                    d_penalty   = 0
+                    g_loss      = 0
+                    c_loss      = 0
+
+
+                    batches_eval = list(self.data_loader.load_batch(batch_size, interpolation = self.interpolated))[0]
+                    batches_A_eval = np.asarray(batches[0])
+                    batches_B_eval = np.asarray(batches[1])
+                    num_batches = len(batches_A)
+                    for batch_i_eval in range(num_batches):
+                        imgs_A_eval = batches_A_eval[batch_i_eval]
+                        imgs_B_eval = batches_B_eval[batch_i_eval]
+                        fake_A_eval = self.generator.predict(imgs_B_eval)
+
+                        
+                        d_stats_real = self.discriminator.evaluate([imgs_A_eval, imgs_B_eval], valid_ones, verbose = 0)
+
+                        d_loss_real = d_loss_real + d_stats_real[0]/num_batches
+                        d_acc_real = d_acc_real + d_stats_real[1]/num_batches
+
+                        d_stats_fake = self.discriminator.evaluate([fake_A_eval, imgs_B_eval], fake, verbose = 0)
+                        d_loss_fake = d_loss_fake + d_stats_fake[0]/num_batches
+                        d_acc_fake = d_acc_fake + d_stats_fake[1]/num_batches
+                        
+
+
+                        
+                        c_stats = self.combined.evaluate([imgs_A_eval, imgs_B_eval], [valid_ones, imgs_A], verbose = 0)
+                        d_penalty = d_penalty + c_stats[1]/num_batches
+                        g_loss = g_loss + c_stats[2]/num_batches
+                        c_loss = c_loss + c_stats[0]/num_batches
+
+
+                    elapsed_time = datetime.datetime.now() - start_time
+                    print ("[Epoch %d/%d] [Batch %d/%d] [D loss real: %f, acc real: %3d%%] [D loss fake: %f, acc fake: %3d%%] [D Penalty: %f] [G Loss: %f] [C loss: %f] time: %s" % (epoch, epochs,
+                                                                        batch_i, self.data_loader.n_batches,
+                                                                        d_loss_real, 100*d_acc_real, d_loss_fake, 100*d_acc_fake, d_penalty,
+                                                                        g_loss, c_loss,
+                                                                        elapsed_time), flush = True)               
+
+
+                    ###coppied from unconditional GAN end
+                    self.sample_images(epoch, batch_i, is_testing=False)
                     '''
                     elapsed_time = datetime.datetime.now() - start_time
                     print ("[Epoch %d/%d] [Batch %d/%d] [D loss: %f, acc: %3d%%] [G loss: %f] time: %s" % (epoch, epochs,
@@ -389,21 +408,6 @@ class Pix2Pix():
                         self.generator.save(filepath)
                         filepath = 'weights/discriminator/'+ts+'/epoch_'+str(epoch)+'.hdf5'
                         self.discriminator.save(filepath)
-
-                        #evaluate test data
-                        #full_image_save_path = "images/%s/%d_%d_full_train_cell_image.tif" % (self.dataset_name, epoch, batch_i)
-                        #self.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/cell #1 area 1 low res.oir', save_path = full_image_save_path, self_ensemble = False, zoom_level = 8, img_channels = 3)
-                        #evaluate low res cell validation data
-                        #full_image_save_path = "images/%s/%d_%d_full_val_low_res_cell_image.tif" % (self.dataset_name, epoch, batch_i)
-                        #self.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/cell area 1 low res.oir', save_path = full_image_save_path, self_ensemble = False, zoom_level = 8, img_channels = 3)
-                        #evaluate low low res cell validation data
-                        #full_image_save_path = "images/%s/%d_%d_full_val_low_low_res_cell_image.tif" % (self.dataset_name, epoch, batch_i)
-                        #self.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Low Res/cell area 1 low low res.oir', save_path = full_image_save_path, self_ensemble = False, zoom_level = 8, img_channels = 3)
-                        #evaluate Kris and Emma's validation data
-                        #full_image_save_path = "images/%s/%d_%d_full_val_Kris_and_Emma_image.tif" % (self.dataset_name, epoch, batch_i)
-                        #self.evaluate('D:/Projects/Github/Super Resolution/Code/Planar Super Resolution/pix2pix/Test outputs/emma_test_slice_four_channel.tif', save_path = full_image_save_path, self_ensemble = False, zoom_level = 16, img_channels = 4)
-                        #full_image_save_path = "images/%s/%d_%d_full_val cell #1 area 9 dapi.tif" % (self.dataset_name, epoch, batch_i)
-                        #self.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C3-cell #1 area 9 low res.tif', save_path = full_image_save_path, self_ensemble = False, zoom_level = 8, img_channels = 1, overlap = False)
                         #full_image_save_path = "images/%s/%d_%d_full_val cell #1 area 9 fibers.tif" % (self.dataset_name, epoch, batch_i)
                         #self.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C2-cell #1 area 9 low res.tif', save_path = full_image_save_path, self_ensemble = False, zoom_level = 8, img_channels = 1, overlap = False)
 
@@ -414,7 +418,7 @@ class Pix2Pix():
     def evaluate(self, full_image_path = None, save_path = "full_output.tif", self_ensemble = False, zoom_level = 1, interpolate_only = False, img_channels = 3, clip_extreme_patches = False, overlap = True, img_dimension = 4096):
 
         if full_image_path != None:
-            print(full_image_path)
+            print(full_image_path, flush = True)
             buffer_pixels = 0
             filenames_low_res = [full_image_path]
             num_images = len(filenames_low_res)
@@ -724,6 +728,7 @@ if __name__ == '__main__':
     #gan.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C3-cell #1 area 8 low res.tif', 
     #    save_path = "full_output_cell_nuclei_train_#1.tif", self_ensemble = False, zoom_level = 8, interpolate_only=False, img_channels = 1, overlap = False)
     #nuclei_gan.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C3-cell #1 area 9 low res.tif', 
+    
     #    save_path = "full_output_cell_nuclei_#1.tif", self_ensemble = False, zoom_level = 8, interpolate_only=False, img_channels = 1, overlap = True)
     #fiber_gan.evaluate('D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/C2-cell #1 area 9 low res.tif', 
     #    save_path = "full_output_cell_fibers_#1.tif", self_ensemble = False, zoom_level = 8, interpolate_only=False, img_channels = 1, overlap = True, clip_extreme_patches = False)
@@ -744,8 +749,8 @@ if __name__ == '__main__':
 
     #'D:/Projects/Local/Super Resolution/Planar SR Images/Low Res/cell area 1 low res.oir' 
     #'D:/Projects/Github/Super Resolution/Code/Planar Super Resolution/pix2pix/full_output_57_self_ensemble.tif'
-    gan.train(epochs=10000, batch_size=8, sample_interval=10, fuzzy_labels = True, noisy_inputs = True)
+    gan.train(epochs=10000, batch_size=8, sample_interval=1, fuzzy_labels = False, noisy_inputs = False)
 
 
     jv.kill_vm()
-    print("EOF: Run Successful")
+    print("EOF: Run Successful", flush = True)
