@@ -97,8 +97,11 @@ class Pix2Pix():
         # Number of filters in the first layer of G and D
         self.gf = 64
         self.df = 64
+        self.learning_rate = 0.0002
 
-        optimizer = Adam(0.0002, 0.5)
+        optimizer = Adam(self.learning_rate)
+        #optimizer = Adam(0.0002, 0.5) weird choice for beta based on default and suggestions from the website
+        
 
         # Build and compile the discriminator
         if self.load_weights:
@@ -110,7 +113,7 @@ class Pix2Pix():
             self.discriminator = self.build_discriminator()
             if self.num_gpus>1:
                 self.discriminator_gpu = multi_gpu_model(self.discriminator, gpus = self.num_gpus)
-            self.discriminator.compile(loss='mse', optimizer=optimizer, metrics=['accuracy'])
+            self.discriminator.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
         #print(self.discriminator.summary())
 
         #-------------------------
@@ -140,7 +143,7 @@ class Pix2Pix():
             valid = self.discriminator_gpu([fake_A, img_B])
             self.combined = Model(inputs=[img_A, img_B], outputs=[valid, fake_A])
             self.combined_gpu = multi_gpu_model(self.combined, gpus = self.num_gpus)
-            self.combined_gpu.compile(loss=['mse', perceptual_loss],
+            self.combined_gpu.compile(loss=['binary_crossentropy', perceptual_loss],
                               loss_weights=[1, 1],
                              optimizer=optimizer) 
         else:
@@ -150,7 +153,7 @@ class Pix2Pix():
             # Discriminators determines validity of translated images / condition pairs
             valid = self.discriminator([fake_A, img_B])
             self.combined = Model(inputs=[img_A, img_B], outputs=[valid, fake_A])
-            self.combined.compile(loss=['mse', perceptual_loss],
+            self.combined.compile(loss=['binary_crossentropy', perceptual_loss],
                               loss_weights=[1, 1],
                              optimizer=optimizer) 
 
@@ -239,12 +242,12 @@ class Pix2Pix():
 
     def build_discriminator(self):
 
-        def d_layer(layer_input, filters, f_size=4, bn=True):
+        def d_layer(layer_input, filters, f_size=3, bn=True, strides = 2):
             """Discriminator layer"""
-            d = Conv2D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
-            d = LeakyReLU(alpha=0.2)(d)
+            d = Conv2D(filters, kernel_size=f_size, strides=strides, padding='same')(layer_input)
             if bn:
                 d = BatchNormalization(momentum=0.8)(d)
+            d = LeakyReLU(alpha=0.2)(d)
             return d
 
 
@@ -259,22 +262,33 @@ class Pix2Pix():
             combined_imgs = Concatenate(axis=-1)([img_A, upsampled_img_B])
     
         
-        d1 = d_layer(combined_imgs, self.df, bn=False)
-        d2 = d_layer(d1, self.df*2)
-        d3 = d_layer(d2, self.df*4)
-        d4 = d_layer(d3, self.df*8)
-        validity = Conv2D(1, kernel_size=4, strides=1, padding='same')(d4)
+        d1 = d_layer(combined_imgs, self.df, bn=False, strides = 2)
+        d2 = d_layer(d1, self.df*2, strides = 2)
+        d3 = d_layer(d2, self.df*4, strides = 2)
+        d4 = d_layer(d3, self.df*8, strides = 2)
 
+        c1 = Conv2D(1, kernel_size=4, strides=1, padding='same')(d4)
+        #b1 = BatchNormalization()(c1)
+        flat = Flatten(name = "flatten")(c1)
+        #b2  = BatchNormalization()(flat)
 
+        #fc1 = Dense(1024, name = 'fc1')(flat)
+        lr1 = LeakyReLU(alpha=0.2, name = 'lr1')(flat)
 
+        validity = Dense(1, activation="sigmoid", name = "discriminator_prediction")(lr1)
 
+        return Model(inputs = [img_A, img_B], outputs = validity, name = 'discriminator')
 
-        return Model([img_A, img_B], validity)
+        #return Model([img_A, img_B], validity)
 
 
 
 
     def train(self, epochs, batch_size=1, sample_interval=50, fuzzy_labels = False, noisy_inputs = False):
+
+        print(self.discriminator.summary())
+        import ipdb; ipdb.set_trace()
+
 
         ts = time.gmtime()
         ts = time.strftime("%Y-%m-%d %H:%M:%S", ts)
@@ -291,8 +305,10 @@ class Pix2Pix():
         start_time = datetime.datetime.now()
 
         # Adversarial loss ground truths
-        valid_ones = np.ones((batch_size,) + self.disc_patch)
-        fake = np.zeros((batch_size,) + self.disc_patch)
+        valid_ones = np.ones((batch_size, 1))
+        fake = np.zeros((batch_size, 1))
+        #valid_ones = np.ones((batch_size,) + self.disc_patch)
+        #fake = np.zeros((batch_size,) + self.disc_patch)
         if fuzzy_labels:
             valid = valid_ones * 0.9
         else:
@@ -325,12 +341,14 @@ class Pix2Pix():
 
                     # Train the generators
                     if noisy_inputs:
-                        input_noise = np.random.normal(loc = 0.0, scale = 0.05, size = imgs_B.shape)
+                        input_noise = np.random.normal(loc = 0.0, scale = 0.001, size = imgs_B.shape)
                         g_loss = self.combined_gpu.train_on_batch([imgs_A, imgs_B+input_noise], [valid, imgs_A])
                     else:
                         g_loss = self.combined_gpu.train_on_batch([imgs_A, imgs_B], [valid, imgs_A])
                 else:
+                    #import ipdb; ipdb.set_trace()
                     fake_A = self.generator.predict(imgs_B)
+                    
                     d_loss_real = self.discriminator.train_on_batch([imgs_A, imgs_B], valid)
                     d_loss_fake = self.discriminator.train_on_batch([fake_A, imgs_B], fake)
                     d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
@@ -338,6 +356,7 @@ class Pix2Pix():
                         input_noise = np.random.normal(loc = 0.0, scale = 0.001, size = imgs_B.shape)
                         g_loss = self.combined.train_on_batch([imgs_A, imgs_B+input_noise], [valid, imgs_A])
                     else:
+                        pass
                         g_loss = self.combined.train_on_batch([imgs_A, imgs_B], [valid, imgs_A])
 
 
@@ -352,6 +371,8 @@ class Pix2Pix():
                     d_penalty   = 0
                     g_loss      = 0
                     c_loss      = 0
+                    d_preds_real= 0
+                    d_preds_fake= 0
 
 
                     batches_eval = list(self.data_loader.load_batch(batch_size, interpolation = self.interpolated))[0]
@@ -366,10 +387,15 @@ class Pix2Pix():
                         
                         d_stats_real = self.discriminator.evaluate([imgs_A_eval, imgs_B_eval], valid_ones, verbose = 0)
 
+                        #import ipdb; ipdb.set_trace()
+                        d_preds_real = d_preds_real + np.mean(self.discriminator.predict([imgs_A_eval, imgs_B_eval]))/num_batches
+
                         d_loss_real = d_loss_real + d_stats_real[0]/num_batches
                         d_acc_real = d_acc_real + d_stats_real[1]/num_batches
 
                         d_stats_fake = self.discriminator.evaluate([fake_A_eval, imgs_B_eval], fake, verbose = 0)
+                        d_preds_fake = d_preds_fake + np.mean(self.discriminator.predict([fake_A_eval, imgs_B_eval]))/num_batches
+
                         d_loss_fake = d_loss_fake + d_stats_fake[0]/num_batches
                         d_acc_fake = d_acc_fake + d_stats_fake[1]/num_batches
                         
@@ -383,9 +409,9 @@ class Pix2Pix():
 
 
                     elapsed_time = datetime.datetime.now() - start_time
-                    print ("[Epoch %d/%d] [Batch %d/%d] [D loss real: %f, acc real: %3d%%] [D loss fake: %f, acc fake: %3d%%] [D Penalty: %f] [G Loss: %f] [C loss: %f] time: %s" % (epoch, epochs,
+                    print ("[Epoch %d/%d] [Batch %d/%d] [real loss: %f, acc: %3d%%, avg pred: %f] [fake loss: %f, acc: %3d%%, avg pred: %f] [D Penalty: %f] [G Loss: %f] [C loss: %f] time: %s" % (epoch, epochs,
                                                                         batch_i, self.data_loader.n_batches,
-                                                                        d_loss_real, 100*d_acc_real, d_loss_fake, 100*d_acc_fake, d_penalty,
+                                                                        d_loss_real, 100*d_acc_real, d_preds_real, d_loss_fake, 100*d_acc_fake, d_preds_fake, d_penalty,
                                                                         g_loss, c_loss,
                                                                         elapsed_time), flush = True)               
 
