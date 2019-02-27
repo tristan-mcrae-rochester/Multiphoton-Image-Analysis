@@ -103,11 +103,17 @@ end
 
 %~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-unmixed_image  = spectral_unmixing_gui(num_channels, num_timesteps, stack);
+%for c = 1:num_channels
+%    channel_names(c) = vDataSet.GetChannelName(c-1);
+%end
+
+
+
+[unmixed_image, infer_channel_names, extra_channel_names]  = spectral_unmixing_gui(num_channels, num_timesteps, x_dim, y_dim, z_dim, stack);
 disp('returning image')
 close all;
 vProgressDisplay = waitbar(0.8,'Returning Image to Imaris');
-return_results_to_imaris(unmixed_image, vDataSet, num_timesteps, vImarisApplication);
+return_results_to_imaris(unmixed_image, vDataSet, num_timesteps, vImarisApplication, infer_channel_names, extra_channel_names);
 
 close all
 
@@ -116,7 +122,7 @@ end
 %~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 %Prompt user for unmixing details
 %~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-function unmixed_image = spectral_unmixing_gui(num_channels, num_timesteps, mixed_image)
+function [unmixed_image, infer_channel_names, extra_channel_names] = spectral_unmixing_gui(num_channels, num_timesteps, x_dim, y_dim, z_dim, mixed_image)
     close all;
 
     h.f = figure('units','pixels','position',[700,500,150,100],...
@@ -137,11 +143,11 @@ function unmixed_image = spectral_unmixing_gui(num_channels, num_timesteps, mixe
         vals = get(h.d,'Value');
         switch vals
             case 1
-                unmixed_image = k_means_gui(num_channels, num_timesteps, mixed_image); 
+                [unmixed_image, infer_channel_names, extra_channel_names] = k_means_gui(num_channels, num_timesteps, x_dim, y_dim, z_dim, mixed_image); 
             case 2
-                unmixed_image = simi_gui(mixed_image); 
+                [unmixed_image, infer_channel_names, extra_channel_names] = simi_gui(mixed_image); 
             case 3
-                unmixed_image = nnmf_gui(mixed_image); 
+                [unmixed_image, infer_channel_names, extra_channel_names] = nnmf_gui(mixed_image); 
 
         end
         close all;
@@ -150,24 +156,54 @@ function unmixed_image = spectral_unmixing_gui(num_channels, num_timesteps, mixe
 end
 
 
-function unmixed_image = k_means_gui(num_channels, num_timesteps, mixed_image)
-    h.f = figure('units','pixels','position',[700,500,max(20+40*num_channels, 300),130],...
+function [unmixed_image, infer_channel_names, extra_channel_names] = k_means_gui(num_channels, num_timesteps, x_dim, y_dim, z_dim, mixed_image)
+    height = 400;
+    width = 500; %max(20+40*num_channels, 300)
+    h.f = figure('units','pixels','position',[700,500,width,height],...
                  'toolbar','none','menu','none', 'Name', 'K-Means Settings', 'NumberTitle', 'off');
 
     h.t(1) = uicontrol('style', 'text','units', 'pixels',...
-        'position',[0, 90, 300, 30], 'string', 'How many fluorophores do you want to unmix?');      
+        'position',[5, height-40, 400, 30], 'string', 'How many fluorophores do you want to unmix? (Including background)');      
 
-    h.s = uicontrol('style', 'edit','units', 'pixels',...
-        'position',[20, 70, 40, 30]);        
+    h.num_fluorophores_to_unmix = uicontrol('style', 'edit','units', 'pixels',...
+        'position',[50, height-60, 40, 30]);        
 
     h.t(2) = uicontrol('style', 'text','units', 'pixels',...
-        'position',[0, 40, 200, 30], 'string', 'Select which channels to unmix');
+        'position',[0, height-100, 200, 30], 'string', 'Select which channels to unmix');
 
     for i = 1:num_channels
         h.c(i) = uicontrol('style','checkbox','units','pixels',...
-                        'position',[10+40*(i-1),30,50,15],'string',int2str(i));
+                        'position',[40+40*(i-1),height-110,50,15],'string',int2str(i));
     end
+    
+    h.t(1) = uicontrol('style', 'text','units', 'pixels',...
+        'position',[0, height-150, 400, 30], 'string', 'Number of Replicates (Runs k-means Multiple Times and Uses Best Result)');  
+    
+    h.replicates = uicontrol('style', 'edit','units', 'pixels',...
+        'position',[50, height-170, 40, 30]); 
+          
+    h.t(2) = uicontrol('style', 'text','units', 'pixels',...
+        'position',[-20, height-200, 300, 30], 'string', 'Representitive timestep to base clustering on');      
 
+    h.representitive_timestep = uicontrol('style', 'edit','units', 'pixels',...
+        'position',[50, height-220, 40, 30]); 
+    
+    h.t(3) = uicontrol('style', 'text','units', 'pixels',...
+        'position',[20, height-260, 200, 30], 'string', 'Representitive slice to base clustering on');      
+
+    h.representitive_slice = uicontrol('style', 'edit','units', 'pixels',...
+        'position',[50, height-280, 40, 30]); 
+    
+    h.scale = uicontrol('style','checkbox','units','pixels',...
+                        'position',[20,height-310,400,15],'string','Cluster Based on Ratio of Channels (Instead of Absolute Channel Values)');
+                    
+    h.multi_fluorophore = uicontrol('style','checkbox','units','pixels',...
+                        'position',[20,height-330,400,15],'string','Allow multiple clusters to occupy a single channel');
+    
+    h.infer_channel_names = uicontrol('style','checkbox','units','pixels',...
+                        'position',[20,height-350,400,15],'string','Infer Channel Names');
+                    
+                    
     h.p = uicontrol('style','pushbutton','units','pixels',...
                     'position',[40,5,70,20],'string','OK',...
                     'callback',@p_call);
@@ -178,11 +214,19 @@ function unmixed_image = k_means_gui(num_channels, num_timesteps, mixed_image)
         if length(vals)>1
             channels_to_unmix = find([vals{:}]);
         else
-            channels_to_unmix = find([vals]);
+            channels_to_unmix = find(vals);
         end
-        num_fluorophores_to_unmix = str2num(get(h.s, 'String'));
+        num_fluorophores_to_unmix = str2num(get(h.num_fluorophores_to_unmix, 'String'));
+        replicates = str2num(get(h.replicates, 'String'));
+        scaled_signatures = get(h.scale,'Value');
+        multi_fluorophore_pixels = get(h.multi_fluorophore,'Value');
+        infer_channel_names = get(h.infer_channel_names,'Value');
+        representitive_timestep = str2num(get(h.representitive_timestep, 'String'));
+        representitive_slice = str2num(get(h.representitive_slice, 'String'));
+        
 
-        unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluorophores_to_unmix, channels_to_unmix, mixed_image);
+        [unmixed_image, extra_channel_names] = k_means_unmixing(num_channels, num_timesteps, x_dim, y_dim, z_dim, num_fluorophores_to_unmix, channels_to_unmix, mixed_image, replicates,...
+            scaled_signatures, multi_fluorophore_pixels, representitive_timestep, representitive_slice, infer_channel_names);
         uiresume
     end
 end
@@ -196,84 +240,122 @@ function unmixed_image = nnmf_gui(mixed_image)
 end
 
 
-function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluorophores_to_unmix, channels_to_unmix, mixed_image)
+function [unmixed_image, extra_channel_names] = k_means_unmixing(num_channels, num_timesteps, x_dim, y_dim, z_dim, num_fluorophores_to_unmix, channels_to_unmix, mixed_image, replicates,...
+    scaled_signatures, multi_fluorophore_pixels, representitive_timestep, representitive_slice, infer_channel_names)
 
-    background_as_cluster = true;
-    dims = size(mixed_image);
-    x_dim = dims(1);
-    y_dim = dims(2);
-    z_dim = dims(3);
-    scaled_signatures = true
+    %background_as_cluster = true;
     use_input_intensities = true; %Setting this to false is good for debugging where certain clusters are
-    replicates = 5
-    multi_fluorophore_pixels = true
-    background_threshold = 0.00;
     maximum_iterations = 100;
     channels = 1:num_channels
     channels_to_leave = channels(~ismember(channels, channels_to_unmix));
-    num_fluorophores_to_unmix = num_fluorophores_to_unmix+background_as_cluster;
+    %num_fluorophores_to_unmix = num_fluorophores_to_unmix+background_as_cluster;
     channels_to_unmix
-    
-    
     
     disp(num_timesteps)
     disp(size(mixed_image))
     
     %It doesn't like doing kmeans on unsigned integers (understandibly)
     mixed_image = double(mixed_image);
+    %save original pixel intensities for later
     unscaled_mixed_image = mixed_image;
-    
-    %Scale pixels for clustering only
-    if scaled_signatures
-        disp("Scaling pixel intensities")
-        mixed_image(:, :, :, channels_to_unmix, :) = mixed_image(:, :, :, channels_to_unmix, :)./max(mixed_image(:)); %change to just be for channels we're unmixing
-    end
-    
-    
-    
-    representitive_timestep = int32(num_timesteps/2)
+      
+    %Select only representitive timestep and slice
     if num_timesteps>1
         reordered_mixed_image = permute(mixed_image, [4 1 2 3 5]);
         reordered_mixed_image = reordered_mixed_image(:, :, :, :, representitive_timestep);
     else
         reordered_mixed_image = permute(mixed_image, [4 1 2 3]);
     end
+    disp(size(reordered_mixed_image))
     
+    if z_dim>1
+        reordered_mixed_image = reordered_mixed_image(:, :, :, representitive_slice);
+    end
+    disp(size(reordered_mixed_image))
     
+    %Normalize pixel intensities
+    for c = 1:length(channels) %scale even the channel you're leaving alone so that softmaxing works. 
+        mixed_image_channel = reordered_mixed_image(c, :, :);
+        mu = mean(mixed_image_channel(:))
+        sigma = std(mixed_image_channel(:))
+        reordered_mixed_image(c, :, :) = (reordered_mixed_image(c, :, :)-mu)/sigma;
+        mixed_image(:, :, :, c, :) = (mixed_image(:, :, :, c, :)-mu)/sigma; %Get z-scores for entire image
+    end 
+    
+    if scaled_signatures
+        %change so that it only includes channels to unmix
+        disp("Softmaxing")
+        reordered_mixed_image_channels_to_unmix = reordered_mixed_image(channels_to_unmix, :, :);
+        mixed_image_channels_to_unmix = mixed_image(:, :, :, channels_to_unmix, :);
+        
+        reordered_mixed_image = exp(reordered_mixed_image)./sum(exp(reordered_mixed_image_channels_to_unmix), 1); %this is waaaaaaay faster
+        mixed_image = exp(mixed_image)./sum(exp(mixed_image_channels_to_unmix), 4); 
+    end
+
+    disp("Finished scaling intensities")
     
     pixel_array = reordered_mixed_image(:, :);%image_to_pixel_array(mixed_image);
     pixel_array = permute(pixel_array, [2 1]);
-
-    %Filter out background pixels
-    pixel_sums = mean(pixel_array, 2);
-    foreground_pixels = pixel_sums > background_threshold;
-    pixel_array(~foreground_pixels)=0;
-
     
+    disp("reordered")
+
     %select just the channels you want to unmix
     pixel_array = pixel_array(:, channels_to_unmix); 
 
-    
-      
+
     close all;    
     vProgressDisplay = waitbar(0.2,'Spectral Unmixing:Running K-Means...');
+    %This really does take a long time for big datasets. Running on just
+    %one z-slice could help that
     disp('Running K-Means. The display may freeze but it is still working behind the scenes. This may take a few minutes for large datasets.')
-    [cluster_indices, cluster_centroids, sumd, D] = kmeans(pixel_array, num_fluorophores_to_unmix, 'Replicates', replicates, 'MaxIter', maximum_iterations, 'Display', 'iter');%, 'Start', initial_centroids);
+    if multi_fluorophore_pixels
+        min_objFunc = inf
+        for i=1:replicates
+            [cluster_centroids_i, U, objFunc] = fcm(pixel_array, num_fluorophores_to_unmix, [2, maximum_iterations, 1e-3, true]);
+            if objFunc(end) <= min_objFunc
+                min_objFunc = objFunc(end)
+                cluster_centroids = cluster_centroids_i
+            end
+        end
+    else
+        [cluster_indices, cluster_centroids, sumd, D] = kmeans(pixel_array, num_fluorophores_to_unmix, 'Replicates', replicates, 'MaxIter', maximum_iterations, 'Display', 'iter');%, 'Start', initial_centroids);
+    end
     disp('Finished Running k-means')
     close all;
     vProgressDisplay = waitbar(0.5,'Spectral Unmixing:Finished Running K-Means...');
     pause(0.01) %let the display catch up
     
     
-    cluster_centroids
+    cluster_centroids_copy = cluster_centroids
+    
+    if infer_channel_names
+        for c = 1:length(channels_to_unmix)
+            [~, closest_cluster] = max(cluster_centroids_copy(:, c));
+            cluster_centroids(c, :) = cluster_centroids_copy(closest_cluster, :)
+            cluster_centroids_copy(closest_cluster, :) = [];
+        end
+        
+        for c = length(channels_to_unmix)+1:num_fluorophores_to_unmix
+            [~, next_cluster] = max(cluster_centroids_copy(:, 1));
+            cluster_centroids(c, :) = cluster_centroids_copy(next_cluster, :)
+            cluster_centroids_copy(next_cluster, :) = [];
+            extra_channel_names(c-length(channels_to_unmix)) = "background";
+        end
+        
+    else
+        extra_channel_names = [];
+    end
 
+    cluster_centroids
     
     cluster_totals = zeros(num_fluorophores_to_unmix, 1);
 
-    for i = 1:num_fluorophores_to_unmix
-        cluster_totals(i) = sum(cluster_indices==i);
+    if not(multi_fluorophore_pixels)
+        for i = 1:num_fluorophores_to_unmix
+            cluster_totals(i) = sum(cluster_indices==i);
+        end
+        cluster_totals
     end
-    cluster_totals;
 
     
     num_output_channels = num_fluorophores_to_unmix+length(channels_to_leave);
@@ -283,58 +365,72 @@ function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluor
     cluster_center_broadcast = zeros(x_dim, y_dim, z_dim, length(channels_to_unmix), num_fluorophores_to_unmix);
     
     disp('Broadcasting cluster centers')
+    %This takes a while as well when there are a lot of pixels. Is there a
+    %way to do with matrix math?
+    
     for cluster = 1:num_fluorophores_to_unmix
-        cluster_center = cluster_centroids(cluster, :);
-        for x = 1:x_dim
-            for y = 1:y_dim
-                for z = 1:z_dim
-                    cluster_center_broadcast(x, y, z, :, cluster) = cluster_center;    
-                end
-            end
-        end
+        cluster_center = reshape(cluster_centroids(cluster, :), 1, 1, 1, length(channels_to_unmix));
+        cluster_center_broadcast(:, :, :, :, cluster) = repmat(cluster_center, x_dim, y_dim, z_dim);
     end
     close all;
     vProgressDisplay = waitbar(0.5,'Applying clustering to data');
     
-    for t = 1:num_timesteps
-        disp(strcat("applying clustering to timestep ", int2str(t), " of ", int2str(num_timesteps)))
-        waitbar(0.5+0.3*t/num_timesteps);
-        if multi_fluorophore_pixels
-            if num_timesteps == 1
-                inverse_square_weights = 1./D.^2;
-                inverse_square_weights_pixel_sums = sum(inverse_square_weights, 2);
-                cluster_weights = inverse_square_weights./inverse_square_weights_pixel_sums;
-                cluster_weights_image(:) = cluster_weights(:);
-            else
-                for cluster = 1:num_fluorophores_to_unmix   
-                    pixel_values = double(mixed_image(:, :, :, channels_to_unmix, t));
-                    diff = pixel_values - cluster_center_broadcast(:, :, :, :, cluster);
-                    intermediate_step = vecnorm(diff, 2, 4); 
-                    distances(:, :, :, cluster) = squeeze(intermediate_step);
-                end
-                pause(0.01)
-                inverse_square_weights = 1./distances.^2;
-                inverse_square_weights_pixel_sums = sum(inverse_square_weights, 4);
-                cluster_weights = inverse_square_weights./inverse_square_weights_pixel_sums;
-                cluster_weights_timestep(:) = cluster_weights(:);
-                cluster_weights_image(:, :, :, :, t) = cluster_weights_timestep;
+
+    if multi_fluorophore_pixels
+        for t = 1:num_timesteps
+            disp(strcat("applying clustering to timestep ", int2str(t), " of ", int2str(num_timesteps)))
+            waitbar(0.5+0.3*t/num_timesteps);
+            for cluster = 1:num_fluorophores_to_unmix   
+                pixel_values = double(mixed_image(:, :, :, channels_to_unmix, t));
+                diff = pixel_values - cluster_center_broadcast(:, :, :, :, cluster);
+                intermediate_step = vecnorm(diff, 2, 4); 
+                distances(:, :, :, cluster) = squeeze(intermediate_step);
             end
-        else
-            if num_timesteps == 1
-                [D_pixel_mins, pixel_channels] = min(D, [], 2);
-                cluster_weights = transpose(ind2vec(transpose(pixel_channels)));
-                cluster_weights_image(:) = cluster_weights(:);
-            else
-                disp('Functionality for multiple timesteps with one fluorophore per pixel is not available')
-            end
+            pause(0.01)
+            inverse_square_weights = 1./distances.^2;
+            inverse_square_weights_pixel_sums = sum(inverse_square_weights, 4);
+            cluster_weights = inverse_square_weights./inverse_square_weights_pixel_sums;
+            cluster_weights_timestep(:) = cluster_weights(:);
+            cluster_weights_image(:, :, :, :, t) = cluster_weights_timestep;
         end
+    else
+        %
+        cluster_weights = zeros(x_dim*y_dim*z_dim*num_timesteps, num_fluorophores_to_unmix);
+        %if num_timesteps == 1 && z_dim == 1
+        %    for i=1:x_dim*y_dim*z_dim*num_timesteps
+        %        cluster_weights(i, cluster_indices(i)) = 1;
+        %    end
+        %    cluster_weights_image(:) = cluster_weights(:);
+        %else
+        for t = 1:num_timesteps
+            cluster_weights_timestep = zeros(x_dim, y_dim, z_dim, num_fluorophores_to_unmix); %so that you don't get weird tails effects
+            disp(strcat("applying clustering to timestep ", int2str(t), " of ", int2str(num_timesteps)))
+            waitbar(0.5+0.3*t/num_timesteps);
+            for cluster = 1:num_fluorophores_to_unmix   
+                pixel_values = double(mixed_image(:, :, :, channels_to_unmix, t));
+                diff = pixel_values - cluster_center_broadcast(:, :, :, :, cluster);
+                intermediate_step = vecnorm(diff, 2, 4); 
+                distances(:, :, :, cluster) = squeeze(intermediate_step);
+            end
+            pause(0.01)
+            [~, cluster_indices] = min(distances, [], length(size(distances)));
+
+            for x=1:x_dim
+                for y = 1:y_dim
+                    for z = 1:z_dim
+                        cluster_weights_timestep(x,y,z,cluster_indices(x,y,z)) = 1;
+                    end
+                end
+            end
+            cluster_weights_image(:, :, :, :, t) = cluster_weights_timestep;
+        end
+        %end
     end
- 
 
     %cluster_weights for each pixel sum to the total intensity of the channels
     %being unmixed after this step
     if use_input_intensities
-        cluster_weights_image = cluster_weights_image .*mean(unscaled_mixed_image(:, :, :, channels_to_unmix, :), 4); 
+        cluster_weights_image = cluster_weights_image .*max(unscaled_mixed_image(:, :, :, channels_to_unmix, :), [],  4); 
     else
         cluster_weights_image = cluster_weights_image * double(max(unscaled_mixed_image(:)));
     end
@@ -342,8 +438,7 @@ function unmixed_image = k_means_unmixing(num_channels, num_timesteps, num_fluor
     unmixed_image = zeros(x_dim, y_dim, z_dim, num_output_channels, num_timesteps);
 
     if length(channels_to_leave)>0
-        %disp('Change this when running for multiple timesteps')
-        unmixed_image(:, :, :, 1:length(channels_to_leave), :) = mixed_image(:, :, :, channels_to_leave, :);
+        unmixed_image(:, :, :, 1:length(channels_to_leave), :) = unscaled_mixed_image(:, :, :, channels_to_leave, :);
     end
     unmixed_image(:, :, :, length(channels_to_leave)+1:end, :) = cluster_weights_image;
     
@@ -409,19 +504,36 @@ function unmixed_image = nnmf_unmixing(mixed_image)
 
 end
 
-function return_results_to_imaris(unmixed_image, vDataSet, num_timesteps, vImarisApplication)
+function return_results_to_imaris(unmixed_image, vDataSet, num_timesteps, vImarisApplication, infer_channel_names, extra_channel_names)
+
 
 % Create a new channel
 dims = size(unmixed_image);
 num_output_channels = dims(4);
-vDataSet.SetSizeC(num_output_channels);            
-%num_timesteps = 1 %For debugging only
+          
+%channel_names = ["test 1", "test 2", "test 3", "test 4", "test 5", "test 6"];
+% if infer_channel_names
+%     %original_colors = vDataSet.GetChannelColorRGBA();
+%     %vDataSet.SetChannelColorRGBA(0);
+%     %output_channel_names = 1;
+% else
+%     disp("Functionality for not infering names is not yet set")
+%     for c=1:num_output_channels
+%         output_channel_names(c) = "Cluster + " + int2str(c);
+%     end
+% end
+
+vDataSet.SetSizeC(num_output_channels);  
+
 
 for t = 1:num_timesteps
     disp(strcat("returning timestep ", int2str(t), " of ", int2str(num_timesteps)))
     waitbar(0.8+0.2*t/num_timesteps)
     pause(0.01)
     for c = 1:num_output_channels
+        %get channel name
+        %channel_name = vImarisApplication.getChannelNames(c-1);
+
         basic_stack = unmixed_image(:, :, :, c, t);
         switch char(vDataSet.GetType())
             case 'eTypeUInt8'
@@ -432,6 +544,18 @@ for t = 1:num_timesteps
                 vDataSet.SetDataVolumeAs1DArrayFloats(single(basic_stack(:)), c-1, t-1);
             otherwise, error('Bad value for type');
         end
+        %rename channel
+        if infer_channel_names 
+            if (c>(num_output_channels-length(extra_channel_names)))
+                vDataSet.SetChannelName(c-1, extra_channel_names(c-(num_output_channels-length(extra_channel_names))));
+                %vImarisDataSet.SetChannelName(vNumberOfChannels,['Distance to ', char(vImarisObject.GetName)]);
+            end
+        else
+            vDataSet.SetChannelName(c-1, ("Channel" + int2str(c)));
+        end
+        
+        
+        
     end
 end
 
