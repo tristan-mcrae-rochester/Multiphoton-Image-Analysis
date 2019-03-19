@@ -675,7 +675,7 @@ function p_call(varargin)
         representitive_slice = str2num(get(h.representitive_slice, 'String'))
         maximum_iterations  = str2num(get(h.max_iter, 'String'))
     else
-        replicates = 25
+        replicates = 10
         scaled_signatures = true
         multi_fluorophore_pixels = false
         infer_channel_names = true
