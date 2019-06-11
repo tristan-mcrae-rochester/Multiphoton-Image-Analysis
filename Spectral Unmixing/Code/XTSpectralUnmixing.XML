@@ -1,7 +1,0 @@
-     <CustomTools>
-       <Menu>
-         <Item name="SpectralUnmixing" icon="Matlab" tooltip="Undo effects of spectral bleed between channels.">
-           <Command>MatlabExe::9.5::XTSpectralUnmixing %i</Command>
-         </Item>
-       </Menu>
-     </CustomTools>
