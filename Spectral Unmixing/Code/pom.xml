@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+		http://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+
+    <profiles>
+	    <profile>
+	      <id>qa</id>
+	      <build>
+	        <plugins>
+	          <plugin>
+	            <artifactId>maven-dependency-plugin</artifactId>
+	            <executions>
+	              <execution>
+	                <phase>install</phase>
+	                <goals>
+	                  <goal>copy-dependencies</goal>
+	                </goals>
+	                <configuration>
+	                  <outputDirectory>${project.build.directory}/lib</outputDirectory>
+	                </configuration>
+	              </execution>
+	            </executions>
+	          </plugin>
+	        </plugins>
+	      </build>
+	    </profile>
+	  </profiles>
+
+
+	<parent>
+		<groupId>org.scijava</groupId>
+		<artifactId>pom-scijava</artifactId>
+		<version>22.3.0</version>
+		<relativePath />
+	</parent>
+	
+
+	<groupId>edu.rochester.urmc</groupId>
+	<artifactId>K_Means</artifactId>
+	<version>1.0.0-SNAPSHOT</version>
+	
+
+	<name>LUMoS Spectral Unmixing</name>
+	<description>A Maven project implementing an ImageJ command.</description>
+	<url>http://mycompany.com/imagej/K-Means/</url>
+	<inceptionYear>2017</inceptionYear>
+	<organization>
+		<name>My Company</name>
+		<url>http://mycompany.com/</url>
+	</organization>
+	<licenses>
+		<license>
+			<name>Simplified BSD License</name>
+			<distribution>repo</distribution>
+		</license>
+	</licenses>
+
+	<developers>
+		<!-- See https://imagej.net/Team -->
+		<developer>
+			<id>tmcrae</id>
+			<name>Tristan McRae</name>
+			<url></url>
+			<roles>
+				<role>founder</role>
+				<role>lead</role>
+				<role>developer</role>
+				<role>debugger</role>
+				<role>reviewer</role>
+				<role>support</role>
+				<role>maintainer</role>
+			</roles>
+		</developer>
+	</developers>
+	<contributors>
+		<contributor>
+			<name>Yili Zhao</name>
+			<url>http://imagej.net/User:Panovr</url>
+			<roles><role>founder</role></roles>
+			<properties><id>panovr</id></properties>
+		</contributor>
+	</contributors>
+
+	<mailingLists>
+		<mailingList>
+			<name>Image.sc Forum</name>
+			<archive>https://forum.image.sc/</archive>
+		</mailingList>
+	</mailingLists>
+
+	<scm>
+		<connection>scm:git:git://github.com/imagej/example-imagej-command</connection>
+		<developerConnection>scm:git:git@github.com:imagej/example-imagej-command</developerConnection>
+		<tag>HEAD</tag>
+		<url>https://github.com/imagej/example-imagej-command</url>
+	</scm>
+	<issueManagement>
+		<system>GitHub Issues</system>
+		<url>https://github.com/imagej/example-imagej-command/issues</url>
+	</issueManagement>
+	<ciManagement>
+		<system>None</system>
+	</ciManagement>
+
+	<properties>
+		<package-name>com.mycompany.imagej</package-name>
+		<main-class>com.mycompany.imagej.K_Means</main-class>
+		<license.licenseName>bsd_2</license.licenseName>
+		<license.copyrightOwners>My Company, Inc.</license.copyrightOwners>
+	</properties>
+
+	<repositories>
+		<repository>
+			<id>imagej.public</id>
+			<url>http://maven.imagej.net/content/groups/public</url>
+		</repository>
+	</repositories>
+
+	<dependencies>
+		<dependency>
+			<groupId>net.imagej</groupId>
+			<artifactId>imagej</artifactId>
+		</dependency>
+		
+		<dependency>
+			<groupId>org.nd4j</groupId>
+			<artifactId>nd4j-native</artifactId>
+			<version>1.0.0-beta3</version>
+		</dependency>
+		
+	    <!--  
+		<dependency>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-dependency-plugin</artifactId>
+            <version>3.1.1</version>
+        </dependency>
+        -->
+        <!-- 
+        <dependency>
+		    <groupId>org.apache.commons</groupId>
+		    <artifactId>commons-math3</artifactId>
+		    <version>3.2</version>
+		</dependency>
+		-->
+		
+		<dependency>
+		  <groupId>org.apache.commons</groupId>
+		  <artifactId>commons-math4</artifactId>
+		  <version>4.0-SNAPSHOT</version>
+		</dependency>
+        
+		<!-- 
+		<dependency>
+		    <groupId>org.deeplearning4j</groupId>
+		    <artifactId>deeplearning4j-core</artifactId>
+		    <version>1.0.0-beta3</version>
+		</dependency>
+		-->
+		
+		
+	</dependencies>
+</project>
